@@ -60,7 +60,7 @@ function UploadZone({ onFileSelected, disabled }) {
       <input
         ref={inputRef}
         type="file"
-        accept="audio/*"
+        accept=".mp3,.wav,.flac,.ogg,.m4a,.aac,.wma,.webm,audio/*"
         style={{ display: "none" }}
         onChange={(e) => e.target.files[0] && onFileSelected(e.target.files[0])}
       />
