@@ -1,0 +1,7 @@
+.git
+outputs/*
+uploads/*
+*.md
+__pycache__
+node_modules
+.dockerignore
