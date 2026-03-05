@@ -1,0 +1,19 @@
+services:
+  app:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - uploads:/app/uploads
+      - outputs:/app/outputs
+    environment:
+      - UPLOAD_DIR=/app/uploads
+      - OUTPUT_DIR=/app/outputs
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+volumes:
+  uploads:
+  outputs:
