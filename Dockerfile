@@ -17,7 +17,7 @@ RUN apt-get update && \
 
 # Install Python dependencies
 COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --progress-bar on -r requirements.txt
 
 # Copy backend
 COPY backend/ ./backend/
