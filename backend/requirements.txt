@@ -2,4 +2,4 @@ flask>=3.0
 flask-cors>=4.0
 gunicorn>=21.2
 demucs>=4.0
-torch>=2.0
+# torch is installed separately in Dockerfile with CPU-only build
