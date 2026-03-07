@@ -1,7 +1,7 @@
 .git
-outputs/*
-uploads/*
+outputs
+uploads
 *.md
 __pycache__
-node_modules
+**/node_modules
 .dockerignore

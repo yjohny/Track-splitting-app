@@ -15,11 +15,12 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg libsndfile1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies (cache mount keeps downloads between builds)
 COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir --progress-bar on \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --progress-bar on \
     torch --extra-index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir --progress-bar on -r requirements.txt
+    pip install --progress-bar on -r requirements.txt
 
 # Copy backend
 COPY backend/ ./backend/
