@@ -10,7 +10,7 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 STATIC_DIR = Path(__file__).parent / "static"
-app = Flask(__name__, static_folder=str(STATIC_DIR) if STATIC_DIR.exists() else None)
+app = Flask(__name__, static_folder=None)
 CORS(app)
 
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "../uploads"))
