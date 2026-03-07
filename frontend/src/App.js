@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import "./App.css";
 
 const API = process.env.REACT_APP_API_URL || "";
@@ -17,12 +17,28 @@ const TRACK_ICONS = {
   other: "\u{1F3B6}",
 };
 
+const TRACK_COLORS = {
+  vocals: "#f472b6",
+  drums: "#fb923c",
+  bass: "#a78bfa",
+  guitar: "#34d399",
+  piano: "#60a5fa",
+  other: "#fbbf24",
+};
+
 function formatBytes(bytes) {
   if (bytes === 0) return "0 B";
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function formatTime(sec) {
+  if (!isFinite(sec)) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 function UploadZone({ onFileSelected, disabled }) {
@@ -68,55 +84,334 @@ function UploadZone({ onFileSelected, disabled }) {
   );
 }
 
-function TrackPlayer({ track, jobId }) {
-  const [playing, setPlaying] = useState(false);
-  const [muted, setMuted] = useState(false);
-  const audioRef = useRef(null);
-
-  const src = `${API}/api/tracks/${jobId}/${track.filename}`;
+/* ---- Mixer Channel Strip ---- */
+function ChannelStrip({ track, volume, muted, solo, anySolo, onVolumeChange, onMuteToggle, onSoloToggle, jobId }) {
   const icon = TRACK_ICONS[track.name.toLowerCase()] || "\u{1F3B5}";
-
-  const toggle = () => {
-    if (!audioRef.current) return;
-    if (playing) {
-      audioRef.current.pause();
-    } else {
-      audioRef.current.play();
-    }
-    setPlaying(!playing);
-  };
+  const color = TRACK_COLORS[track.name.toLowerCase()] || "#888";
+  const isAudible = !muted && (!anySolo || solo);
+  const src = `${API}/api/tracks/${jobId}/${track.filename}`;
 
   return (
-    <div className={`track-card ${playing ? "playing" : ""}`}>
-      <div className="track-icon">{icon}</div>
-      <div className="track-info">
-        <span className="track-name">{track.name}</span>
-        <audio
-          ref={audioRef}
-          src={src}
-          muted={muted}
-          onEnded={() => setPlaying(false)}
-          preload="none"
-        />
+    <div className={`channel-strip ${!isAudible ? "silenced" : ""}`}>
+      <div className="channel-header">
+        <span className="channel-icon">{icon}</span>
+        <span className="channel-name">{track.name}</span>
       </div>
-      <div className="track-controls">
-        <button className="btn-icon" onClick={toggle} title={playing ? "Pause" : "Play"}>
-          {playing ? "\u23F8" : "\u25B6"}
-        </button>
+
+      <div className="channel-slider-wrap">
+        <input
+          type="range"
+          className="channel-slider"
+          min="0"
+          max="1"
+          step="0.01"
+          value={muted ? 0 : volume}
+          onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
+          style={{ "--track-color": color }}
+        />
+        <span className="channel-db">{muted ? "-\u221E" : volume === 0 ? "-\u221E" : `${Math.round(20 * Math.log10(volume))} dB`}</span>
+      </div>
+
+      <div className="channel-buttons">
         <button
-          className={`btn-icon ${muted ? "muted" : ""}`}
-          onClick={() => setMuted(!muted)}
+          className={`ch-btn ch-mute ${muted ? "active" : ""}`}
+          onClick={onMuteToggle}
           title={muted ? "Unmute" : "Mute"}
         >
-          {muted ? "\u{1F507}" : "\u{1F50A}"}
+          M
         </button>
-        <a href={src} download={track.filename} className="btn-icon" title="Download">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <button
+          className={`ch-btn ch-solo ${solo ? "active" : ""}`}
+          onClick={onSoloToggle}
+          title={solo ? "Unsolo" : "Solo"}
+        >
+          S
+        </button>
+        <a href={src} download={track.filename} className="ch-btn ch-download" title="Download track">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="7 10 12 15 17 10" />
             <line x1="12" y1="15" x2="12" y2="3" />
           </svg>
         </a>
+      </div>
+    </div>
+  );
+}
+
+/* ---- Mixer component ---- */
+function Mixer({ tracks, jobId, fileName }) {
+  const audioCtxRef = useRef(null);
+  const gainNodesRef = useRef({});
+  const audioElementsRef = useRef({});
+  const sourceNodesRef = useRef({});
+
+  const [volumes, setVolumes] = useState({});
+  const [mutes, setMutes] = useState({});
+  const [solos, setSolos] = useState({});
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [mixingDown, setMixingDown] = useState(false);
+  const animFrameRef = useRef(null);
+
+  const anySolo = Object.values(solos).some(Boolean);
+
+  // Initialize volumes
+  useEffect(() => {
+    const v = {}, m = {}, s = {};
+    tracks.forEach((t) => {
+      v[t.name] = 1;
+      m[t.name] = false;
+      s[t.name] = false;
+    });
+    setVolumes(v);
+    setMutes(m);
+    setSolos(s);
+  }, [tracks]);
+
+  // Initialize Web Audio API
+  useEffect(() => {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtxRef.current = ctx;
+
+    const elements = {};
+    const sources = {};
+    const gains = {};
+    let loadedCount = 0;
+
+    tracks.forEach((t) => {
+      const audio = new Audio(`${API}/api/tracks/${jobId}/${t.filename}`);
+      audio.crossOrigin = "anonymous";
+      audio.preload = "auto";
+
+      audio.addEventListener("canplaythrough", () => {
+        loadedCount++;
+        if (loadedCount === tracks.length) {
+          const maxDur = Math.max(...tracks.map((tr) => {
+            const el = elements[tr.name];
+            return el ? el.duration : 0;
+          }));
+          setDuration(maxDur);
+          setLoaded(true);
+        }
+      }, { once: true });
+
+      const source = ctx.createMediaElementSource(audio);
+      const gain = ctx.createGain();
+      source.connect(gain);
+      gain.connect(ctx.destination);
+
+      elements[t.name] = audio;
+      sources[t.name] = source;
+      gains[t.name] = gain;
+    });
+
+    audioElementsRef.current = elements;
+    sourceNodesRef.current = sources;
+    gainNodesRef.current = gains;
+
+    return () => {
+      Object.values(elements).forEach((a) => { a.pause(); a.src = ""; });
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      ctx.close();
+    };
+  }, [tracks, jobId]);
+
+  // Sync gain values
+  useEffect(() => {
+    tracks.forEach((t) => {
+      const gain = gainNodesRef.current[t.name];
+      if (!gain) return;
+      const isMuted = mutes[t.name];
+      const isSolo = solos[t.name];
+      const audible = !isMuted && (!anySolo || isSolo);
+      gain.gain.value = audible ? (volumes[t.name] ?? 1) : 0;
+    });
+  }, [volumes, mutes, solos, anySolo, tracks]);
+
+  // Animation frame for time
+  useEffect(() => {
+    const tick = () => {
+      const first = Object.values(audioElementsRef.current)[0];
+      if (first) setCurrentTime(first.currentTime);
+      animFrameRef.current = requestAnimationFrame(tick);
+    };
+    if (playing) {
+      animFrameRef.current = requestAnimationFrame(tick);
+    } else {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    }
+    return () => { if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); };
+  }, [playing]);
+
+  // Listen for ended
+  useEffect(() => {
+    const first = Object.values(audioElementsRef.current)[0];
+    if (!first) return;
+    const onEnded = () => { setPlaying(false); setCurrentTime(0); };
+    first.addEventListener("ended", onEnded);
+    return () => first.removeEventListener("ended", onEnded);
+  }, [loaded]);
+
+  const playAll = async () => {
+    if (audioCtxRef.current?.state === "suspended") {
+      await audioCtxRef.current.resume();
+    }
+    Object.values(audioElementsRef.current).forEach((a) => a.play());
+    setPlaying(true);
+  };
+
+  const pauseAll = () => {
+    Object.values(audioElementsRef.current).forEach((a) => a.pause());
+    setPlaying(false);
+  };
+
+  const stopAll = () => {
+    Object.values(audioElementsRef.current).forEach((a) => {
+      a.pause();
+      a.currentTime = 0;
+    });
+    setPlaying(false);
+    setCurrentTime(0);
+  };
+
+  const seek = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const time = ratio * duration;
+    Object.values(audioElementsRef.current).forEach((a) => { a.currentTime = time; });
+    setCurrentTime(time);
+  };
+
+  const handleDownloadMix = async () => {
+    setMixingDown(true);
+    try {
+      // Build volume map from current mixer state
+      const volumeMap = {};
+      tracks.forEach((t) => {
+        const isMuted = mutes[t.name];
+        const isSolo = solos[t.name];
+        const audible = !isMuted && (!anySolo || isSolo);
+        volumeMap[t.name] = audible ? (volumes[t.name] ?? 1) : 0;
+      });
+
+      const res = await fetch(`${API}/api/tracks/${jobId}/mix`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ volumes: volumeMap }),
+      });
+
+      if (!res.ok) throw new Error("Mix failed");
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${fileName.replace(/\.[^.]+$/, "")}_custom_mix.wav`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Failed to download mix: " + err.message);
+    }
+    setMixingDown(false);
+  };
+
+  return (
+    <div className="mixer">
+      {/* Transport bar */}
+      <div className="transport">
+        <div className="transport-buttons">
+          <button className="transport-btn" onClick={stopAll} title="Stop" disabled={!loaded}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+          </button>
+          <button className="transport-btn play-btn" onClick={playing ? pauseAll : playAll} title={playing ? "Pause" : "Play"} disabled={!loaded}>
+            {playing ? (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+            ) : (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20" /></svg>
+            )}
+          </button>
+        </div>
+
+        <span className="transport-time">{formatTime(currentTime)}</span>
+
+        <div className="transport-progress" onClick={loaded ? seek : undefined}>
+          <div className="progress-track">
+            <div
+              className="progress-fill"
+              style={{ width: duration ? `${(currentTime / duration) * 100}%` : "0%" }}
+            />
+          </div>
+        </div>
+
+        <span className="transport-time">{formatTime(duration)}</span>
+      </div>
+
+      {!loaded && (
+        <div className="mixer-loading">
+          <div className="spinner" />
+          <span>Loading tracks...</span>
+        </div>
+      )}
+
+      {/* Channel strips */}
+      <div className="channel-strips">
+        {tracks.map((t) => (
+          <ChannelStrip
+            key={t.name}
+            track={t}
+            jobId={jobId}
+            volume={volumes[t.name] ?? 1}
+            muted={mutes[t.name] ?? false}
+            solo={solos[t.name] ?? false}
+            anySolo={anySolo}
+            onVolumeChange={(v) => setVolumes((prev) => ({ ...prev, [t.name]: v }))}
+            onMuteToggle={() => setMutes((prev) => ({ ...prev, [t.name]: !prev[t.name] }))}
+            onSoloToggle={() => setSolos((prev) => ({ ...prev, [t.name]: !prev[t.name] }))}
+          />
+        ))}
+      </div>
+
+      {/* Download actions */}
+      <div className="download-section">
+        <h3 className="download-title">Download</h3>
+        <div className="download-buttons">
+          <a
+            href={`${API}/api/tracks/${jobId}/download-all`}
+            className="btn btn-primary"
+            download
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            All Tracks (ZIP)
+          </a>
+          <button
+            className="btn btn-accent"
+            onClick={handleDownloadMix}
+            disabled={mixingDown}
+          >
+            {mixingDown ? (
+              <>
+                <div className="spinner-small" />
+                Mixing...
+              </>
+            ) : (
+              <>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 18V5l12-2v13" />
+                  <circle cx="6" cy="18" r="3" />
+                  <circle cx="18" cy="16" r="3" />
+                </svg>
+                Download Current Mix
+              </>
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -202,28 +497,16 @@ export default function App() {
         {status === "done" ? (
           <div className="results">
             <div className="results-header">
-              <h2>Separated Tracks</h2>
-              <p className="results-filename">{file?.name}</p>
-            </div>
-
-            <div className="tracks-grid">
-              {tracks.map((t) => (
-                <TrackPlayer key={t.name} track={t} jobId={jobId} />
-              ))}
-            </div>
-
-            <div className="results-actions">
-              <a
-                href={`${API}/api/tracks/${jobId}/download-all`}
-                className="btn btn-primary"
-                download
-              >
-                Download All Tracks (ZIP)
-              </a>
-              <button className="btn btn-secondary" onClick={reset}>
+              <div>
+                <h2>Separated Tracks</h2>
+                <p className="results-filename">{file?.name}</p>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={reset}>
                 Split Another Song
               </button>
             </div>
+
+            <Mixer tracks={tracks} jobId={jobId} fileName={file?.name || "track"} />
           </div>
         ) : (
           <div className="upload-section">

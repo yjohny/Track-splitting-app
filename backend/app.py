@@ -2,6 +2,7 @@ import os
 import uuid
 import subprocess
 import shutil
+import tempfile
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
@@ -174,6 +175,65 @@ def download_all(job_id: str):
 
     return send_file(str(zip_path), mimetype="application/zip",
                      as_attachment=True, download_name=f"{Path(job['filename']).stem}_tracks.zip")
+
+
+@app.route("/api/tracks/<job_id>/mix", methods=["POST"])
+def download_mix(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    if not request.is_json or "volumes" not in request.json:
+        return jsonify({"error": "Missing volumes map"}), 400
+
+    volume_map = request.json["volumes"]  # e.g. {"vocals": 0.8, "drums": 1.0, "bass": 0, ...}
+    output_path = OUTPUT_DIR / job_id
+
+    # Find all track files
+    track_files = []
+    for track in job.get("tracks", []):
+        matches = list(output_path.rglob(track["filename"]))
+        if matches:
+            vol = volume_map.get(track["name"], 1.0)
+            track_files.append((str(matches[0]), float(vol)))
+
+    if not track_files:
+        return jsonify({"error": "No tracks found"}), 404
+
+    # Use ffmpeg to mix tracks with individual volumes
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            mix_path = tmp.name
+
+        # Build ffmpeg filter: apply volume to each input, then amix them
+        inputs = []
+        filter_parts = []
+        for i, (path, vol) in enumerate(track_files):
+            inputs.extend(["-i", path])
+            filter_parts.append(f"[{i}]volume={vol}[v{i}]")
+
+        mix_inputs = "".join(f"[v{i}]" for i in range(len(track_files)))
+        filter_parts.append(f"{mix_inputs}amix=inputs={len(track_files)}:duration=longest:normalize=0[out]")
+
+        filter_graph = ";".join(filter_parts)
+
+        cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_graph, "-map", "[out]", mix_path]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            return jsonify({"error": "Mix failed: " + (result.stderr[-300:] if result.stderr else "unknown")}), 500
+
+        original_stem = Path(job["filename"]).stem
+        return send_file(
+            mix_path,
+            mimetype="audio/wav",
+            as_attachment=True,
+            download_name=f"{original_stem}_custom_mix.wav",
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Mix timed out"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/", defaults={"path": ""})
