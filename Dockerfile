@@ -30,9 +30,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn \
     -r requirements.txt
 
-# Pre-download Demucs models so they're cached in the image
-# (dl.fbaipublicfiles.com is often blocked in China at runtime)
-RUN python -c "import torch; from demucs.pretrained import get_model; get_model('htdemucs'); get_model('htdemucs_6s')"
+# Copy pre-downloaded Demucs models into the torch hub cache
+# (avoids needing VPN to reach dl.fbaipublicfiles.com during build)
+COPY models/*.th /root/.cache/torch/hub/checkpoints/
 
 # Copy backend
 COPY backend/ ./backend/
