@@ -32,7 +32,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # Copy pre-downloaded Demucs models into the torch hub cache
 # (avoids needing VPN to reach dl.fbaipublicfiles.com during build)
-COPY models/*.th /root/.cache/torch/hub/checkpoints/
+RUN mkdir -p /root/.cache/torch/hub/checkpoints
+COPY models/ /tmp/models/
+RUN cp /tmp/models/*.th /root/.cache/torch/hub/checkpoints/ 2>/dev/null; rm -rf /tmp/models
 
 # Copy backend
 COPY backend/ ./backend/
