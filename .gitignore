@@ -1,5 +1,7 @@
 node_modules/
 frontend/build/
+frontend/package-lock.json
+backend/static/
 __pycache__/
 *.pyc
 .env
