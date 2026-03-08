@@ -2,8 +2,7 @@
 FROM node:20-slim AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package.json ./
-RUN npm config set registry https://registry.npmmirror.com && \
-    npm install --production
+RUN npm install --production
 COPY frontend/ ./
 RUN npm run build
 
@@ -11,30 +10,19 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /app
 
-# Use Chinese mirrors for apt
-RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/* 2>/dev/null; \
-    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null; true
-
 # Install system deps for audio processing
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg libsndfile1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies (Chinese mirrors + cache mount)
+# Install Python dependencies
 COPY backend/requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --progress-bar on \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn \
-    torch && \
-    pip install --progress-bar on \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn \
-    -r requirements.txt
+    pip install --progress-bar on torch && \
+    pip install --progress-bar on -r requirements.txt
 
-# Copy pre-downloaded Demucs models into the torch hub cache
-# (avoids needing VPN to reach dl.fbaipublicfiles.com during build)
+# Create torch hub cache dir – Demucs will download models on first run
 RUN mkdir -p /root/.cache/torch/hub/checkpoints
-COPY models/ /tmp/models/
-RUN cp /tmp/models/*.th /root/.cache/torch/hub/checkpoints/ 2>/dev/null; rm -rf /tmp/models
 
 # Copy backend
 COPY backend/ ./backend/
