@@ -5,3 +5,4 @@ uploads
 __pycache__
 **/node_modules
 .dockerignore
+backend/static
