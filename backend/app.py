@@ -10,14 +10,7 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-# Point Flask's built-in static serving at the React build's "static/" sub-dir
-# so /static/js/... and /static/css/... are served correctly.
-_static_assets = STATIC_DIR / "static"
-app = Flask(
-    __name__,
-    static_folder=str(_static_assets) if _static_assets.is_dir() else None,
-    static_url_path="/static",
-)
+app = Flask(__name__, static_folder=None)
 CORS(app)
 
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "../uploads"))
@@ -241,22 +234,6 @@ def download_mix(job_id: str):
         return jsonify({"error": "Mix timed out"}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/debug/static", methods=["GET"])
-def debug_static():
-    """Temporary debug endpoint — remove after fixing static serving."""
-    import json
-    files = []
-    if STATIC_DIR.exists():
-        for f in sorted(STATIC_DIR.rglob("*")):
-            if f.is_file():
-                files.append(str(f.relative_to(STATIC_DIR)))
-    return jsonify({
-        "STATIC_DIR": str(STATIC_DIR),
-        "exists": STATIC_DIR.exists(),
-        "files": files,
-    })
 
 
 @app.route("/", defaults={"path": ""})
