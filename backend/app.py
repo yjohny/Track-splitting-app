@@ -10,7 +10,14 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-app = Flask(__name__, static_folder=None)
+# Point Flask's built-in static serving at the React build's "static/" sub-dir
+# so /static/js/... and /static/css/... are served correctly.
+_static_assets = STATIC_DIR / "static"
+app = Flask(
+    __name__,
+    static_folder=str(_static_assets) if _static_assets.is_dir() else None,
+    static_url_path="/static",
+)
 CORS(app)
 
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "../uploads"))
