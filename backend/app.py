@@ -236,6 +236,22 @@ def download_mix(job_id: str):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/debug/static", methods=["GET"])
+def debug_static():
+    """Temporary debug endpoint — remove after fixing static serving."""
+    import json
+    files = []
+    if STATIC_DIR.exists():
+        for f in sorted(STATIC_DIR.rglob("*")):
+            if f.is_file():
+                files.append(str(f.relative_to(STATIC_DIR)))
+    return jsonify({
+        "STATIC_DIR": str(STATIC_DIR),
+        "exists": STATIC_DIR.exists(),
+        "files": files,
+    })
+
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
@@ -243,7 +259,10 @@ def serve_frontend(path):
         file_path = STATIC_DIR / path
         if file_path.is_file():
             return send_from_directory(str(STATIC_DIR), path)
-        return send_from_directory(str(STATIC_DIR), "index.html")
+        # For SPA: serve index.html for any non-file path
+        index = STATIC_DIR / "index.html"
+        if index.is_file():
+            return send_from_directory(str(STATIC_DIR), "index.html")
     return jsonify({"message": "Track Splitter API. Frontend not built — run npm run build in frontend/."}), 200
 
 
