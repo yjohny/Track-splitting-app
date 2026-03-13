@@ -245,6 +245,12 @@ def index():
 
 @app.errorhandler(404)
 def not_found(e):
+    # Only serve index.html for navigation routes (SPA fallback).
+    # Do NOT intercept requests for static assets — let them return a real 404
+    # so the browser can report the missing file instead of silently failing.
+    path = request.path
+    if path.startswith("/static/") or path.startswith("/api/") or "." in path.split("/")[-1]:
+        return jsonify({"error": "Not found"}), 404
     if (STATIC_DIR / "index.html").is_file():
         return send_from_directory(str(STATIC_DIR), "index.html")
     return jsonify({"error": "Not found"}), 404
