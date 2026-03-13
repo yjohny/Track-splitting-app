@@ -10,7 +10,7 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-app = Flask(__name__, static_folder=None)
+app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
 CORS(app)
 
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "../uploads"))
@@ -236,18 +236,18 @@ def download_mix(job_id: str):
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def serve_frontend(path):
-    if STATIC_DIR.exists():
-        file_path = STATIC_DIR / path
-        if file_path.is_file():
-            return send_from_directory(str(STATIC_DIR), path)
-        # For SPA: serve index.html for any non-file path
-        index = STATIC_DIR / "index.html"
-        if index.is_file():
-            return send_from_directory(str(STATIC_DIR), "index.html")
+@app.route("/")
+def index():
+    if (STATIC_DIR / "index.html").is_file():
+        return send_from_directory(str(STATIC_DIR), "index.html")
     return jsonify({"message": "Track Splitter API. Frontend not built — run npm run build in frontend/."}), 200
+
+
+@app.errorhandler(404)
+def not_found(e):
+    if (STATIC_DIR / "index.html").is_file():
+        return send_from_directory(str(STATIC_DIR), "index.html")
+    return jsonify({"error": "Not found"}), 404
 
 
 if __name__ == "__main__":
