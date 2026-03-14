@@ -1,0 +1,993 @@
+import React, { useState, useRef, useCallback, useEffect } from "react";
+import "./App.css";
+import { Track, Model, AppStatus, ExportFormat, Theme, ProgressEvent } from "./types";
+
+const API = process.env.REACT_APP_API_URL || "";
+
+const MODELS: Model[] = [
+  { id: "htdemucs", label: "HTDemucs (4 stems)", desc: "Vocals, drums, bass, other" },
+  { id: "htdemucs_6s", label: "HTDemucs 6-stem", desc: "Vocals, drums, bass, guitar, piano, other" },
+];
+
+const TRACK_ICONS: Record<string, string> = {
+  vocals: "\u{1F3A4}",
+  drums: "\u{1F941}",
+  bass: "\u{1F3B8}",
+  guitar: "\u{1F3B8}",
+  piano: "\u{1F3B9}",
+  other: "\u{1F3B6}",
+};
+
+const TRACK_COLORS: Record<string, string> = {
+  vocals: "#f472b6",
+  drums: "#fb923c",
+  bass: "#a78bfa",
+  guitar: "#34d399",
+  piano: "#60a5fa",
+  other: "#fbbf24",
+};
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function formatTime(sec: number): string {
+  if (!isFinite(sec)) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/* ---- Theme Hook ---- */
+function useTheme(): [Theme, () => void] {
+  const [theme, setTheme] = useState<Theme>(() => {
+    const saved = localStorage.getItem("theme") as Theme | null;
+    return saved || "dark";
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  }, []);
+
+  return [theme, toggleTheme];
+}
+
+/* ---- Upload Zone ---- */
+interface UploadZoneProps {
+  onFileSelected: (file: File) => void;
+  disabled: boolean;
+}
+
+function UploadZone({ onFileSelected, disabled }: UploadZoneProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      if (disabled) return;
+      const file = e.dataTransfer.files[0];
+      if (file) onFileSelected(file);
+    },
+    [disabled, onFileSelected]
+  );
+
+  return (
+    <div
+      className={`upload-zone ${dragOver ? "drag-over" : ""} ${disabled ? "disabled" : ""}`}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      onClick={() => !disabled && inputRef.current?.click()}
+      role="button"
+      tabIndex={0}
+      aria-label="Upload audio file"
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); !disabled && inputRef.current?.click(); } }}
+    >
+      <div className="upload-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="17 8 12 3 7 8" />
+          <line x1="12" y1="3" x2="12" y2="15" />
+        </svg>
+      </div>
+      <p className="upload-text">Drop a music file here or click to browse</p>
+      <p className="upload-hint">MP3, WAV, FLAC, OGG, M4A, AAC &bull; Max 200 MB</p>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".mp3,.wav,.flac,.ogg,.m4a,.aac,.wma,.webm,audio/*"
+        style={{ display: "none" }}
+        onChange={(e) => e.target.files?.[0] && onFileSelected(e.target.files[0])}
+        aria-hidden="true"
+      />
+    </div>
+  );
+}
+
+/* ---- Waveform Component ---- */
+interface WaveformProps {
+  audioUrl: string;
+  color: string;
+  height?: number;
+}
+
+function Waveform({ audioUrl, color, height = 40 }: WaveformProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [waveformData, setWaveformData] = useState<number[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+    fetch(audioUrl)
+      .then((res) => res.arrayBuffer())
+      .then((buf) => ctx.decodeAudioData(buf))
+      .then((audioBuffer) => {
+        if (cancelled) return;
+        const rawData = audioBuffer.getChannelData(0);
+        const samples = 100;
+        const blockSize = Math.floor(rawData.length / samples);
+        const peaks: number[] = [];
+        for (let i = 0; i < samples; i++) {
+          let sum = 0;
+          for (let j = 0; j < blockSize; j++) {
+            sum += Math.abs(rawData[i * blockSize + j]);
+          }
+          peaks.push(sum / blockSize);
+        }
+        const max = Math.max(...peaks);
+        setWaveformData(peaks.map((p) => (max > 0 ? p / max : 0)));
+      })
+      .catch(() => {
+        // Silently fail - waveform is optional
+      })
+      .finally(() => {
+        ctx.close();
+      });
+
+    return () => { cancelled = true; };
+  }, [audioUrl]);
+
+  useEffect(() => {
+    if (!waveformData || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvas.offsetWidth * dpr;
+    canvas.height = height * dpr;
+    ctx.scale(dpr, dpr);
+
+    const width = canvas.offsetWidth;
+    const barWidth = width / waveformData.length;
+    const halfHeight = height / 2;
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.6;
+
+    waveformData.forEach((val, i) => {
+      const barHeight = val * halfHeight * 0.9;
+      const x = i * barWidth;
+      ctx.fillRect(x, halfHeight - barHeight, barWidth - 1, barHeight * 2);
+    });
+  }, [waveformData, color, height]);
+
+  if (!waveformData) return null;
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="waveform-canvas"
+      style={{ width: "100%", height: `${height}px` }}
+      aria-hidden="true"
+    />
+  );
+}
+
+/* ---- Channel Strip ---- */
+interface ChannelStripProps {
+  track: Track;
+  volume: number;
+  muted: boolean;
+  solo: boolean;
+  anySolo: boolean;
+  onVolumeChange: (v: number) => void;
+  onMuteToggle: () => void;
+  onSoloToggle: () => void;
+  jobId: string;
+  exportFormat: ExportFormat;
+  index: number;
+  onDragStart: (index: number) => void;
+  onDragOver: (index: number) => void;
+  onDragEnd: () => void;
+  isDragTarget: boolean;
+}
+
+function ChannelStrip({
+  track, volume, muted, solo, anySolo,
+  onVolumeChange, onMuteToggle, onSoloToggle,
+  jobId, exportFormat, index,
+  onDragStart, onDragOver, onDragEnd, isDragTarget,
+}: ChannelStripProps) {
+  const icon = TRACK_ICONS[track.name.toLowerCase()] || "\u{1F3B5}";
+  const color = TRACK_COLORS[track.name.toLowerCase()] || "#888";
+  const isAudible = !muted && (!anySolo || solo);
+  const formatParam = exportFormat !== "wav" ? `?format=${exportFormat}` : "";
+  const src = `${API}/api/tracks/${jobId}/${track.filename}${formatParam}`;
+  const audioUrl = `${API}/api/tracks/${jobId}/${track.filename}`;
+
+  return (
+    <div
+      className={`channel-strip ${!isAudible ? "silenced" : ""} ${isDragTarget ? "drag-target" : ""}`}
+      draggable
+      onDragStart={() => onDragStart(index)}
+      onDragOver={(e) => { e.preventDefault(); onDragOver(index); }}
+      onDragEnd={onDragEnd}
+      role="listitem"
+      aria-label={`${track.name} track`}
+    >
+      <div className="channel-header">
+        <span className="drag-handle" aria-hidden="true">&#x2630;</span>
+        <span className="channel-icon" aria-hidden="true">{icon}</span>
+        <span className="channel-name">{track.name}</span>
+      </div>
+
+      <div className="channel-body">
+        <Waveform audioUrl={audioUrl} color={color} />
+        <div className="channel-slider-wrap">
+          <input
+            type="range"
+            className="channel-slider"
+            min="0"
+            max="1"
+            step="0.01"
+            value={muted ? 0 : volume}
+            onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
+            style={{ "--track-color": color } as React.CSSProperties}
+            aria-label={`${track.name} volume`}
+          />
+          <span className="channel-db">
+            {muted ? "-\u221E" : volume === 0 ? "-\u221E" : `${Math.round(20 * Math.log10(volume))} dB`}
+          </span>
+        </div>
+      </div>
+
+      <div className="channel-buttons">
+        <button
+          className={`ch-btn ch-mute ${muted ? "active" : ""}`}
+          onClick={onMuteToggle}
+          title={muted ? "Unmute" : "Mute"}
+          aria-label={muted ? `Unmute ${track.name}` : `Mute ${track.name}`}
+          aria-pressed={muted}
+        >
+          M
+        </button>
+        <button
+          className={`ch-btn ch-solo ${solo ? "active" : ""}`}
+          onClick={onSoloToggle}
+          title={solo ? "Unsolo" : "Solo"}
+          aria-label={solo ? `Unsolo ${track.name}` : `Solo ${track.name}`}
+          aria-pressed={solo}
+        >
+          S
+        </button>
+        <a href={src} download={track.filename} className="ch-btn ch-download" title="Download track" aria-label={`Download ${track.name}`}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+        </a>
+      </div>
+    </div>
+  );
+}
+
+/* ---- Mixer component ---- */
+interface MixerProps {
+  tracks: Track[];
+  jobId: string;
+  fileName: string;
+}
+
+function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainNodesRef = useRef<Record<string, GainNode>>({});
+  const audioElementsRef = useRef<Record<string, HTMLAudioElement>>({});
+  const sourceNodesRef = useRef<Record<string, MediaElementAudioSourceNode>>({});
+
+  const [trackOrder, setTrackOrder] = useState<Track[]>(initialTracks);
+  const [volumes, setVolumes] = useState<Record<string, number>>({});
+  const [mutes, setMutes] = useState<Record<string, boolean>>({});
+  const [solos, setSolos] = useState<Record<string, boolean>>({});
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [mixingDown, setMixingDown] = useState(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("wav");
+  const [selectedTrack, setSelectedTrack] = useState(0);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragTarget, setDragTarget] = useState<number | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+
+  const anySolo = Object.values(solos).some(Boolean);
+
+  // Initialize volumes
+  useEffect(() => {
+    const v: Record<string, number> = {};
+    const m: Record<string, boolean> = {};
+    const s: Record<string, boolean> = {};
+    initialTracks.forEach((t) => {
+      v[t.name] = 1;
+      m[t.name] = false;
+      s[t.name] = false;
+    });
+    setVolumes(v);
+    setMutes(m);
+    setSolos(s);
+    setTrackOrder(initialTracks);
+  }, [initialTracks]);
+
+  // Initialize Web Audio API
+  useEffect(() => {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    audioCtxRef.current = ctx;
+
+    const elements: Record<string, HTMLAudioElement> = {};
+    const sources: Record<string, MediaElementAudioSourceNode> = {};
+    const gains: Record<string, GainNode> = {};
+    let loadedCount = 0;
+    let hasFinalized = false;
+
+    const finalize = () => {
+      if (hasFinalized) return;
+      hasFinalized = true;
+      const maxDur = Math.max(...initialTracks.map((tr) => {
+        const el = elements[tr.name];
+        return el && isFinite(el.duration) ? el.duration : 0;
+      }));
+      setDuration(maxDur);
+      setLoaded(true);
+    };
+
+    const onTrackReady = () => {
+      loadedCount++;
+      if (loadedCount === initialTracks.length) finalize();
+    };
+
+    const timeout = setTimeout(() => {
+      if (!hasFinalized) {
+        console.warn("Audio loading timed out — showing mixer with available tracks");
+        finalize();
+      }
+    }, 30000);
+
+    initialTracks.forEach((t) => {
+      const audio = new Audio(`${API}/api/tracks/${jobId}/${t.filename}`);
+      audio.crossOrigin = "anonymous";
+      audio.preload = "auto";
+
+      audio.addEventListener("loadeddata", onTrackReady, { once: true });
+      audio.addEventListener("error", () => {
+        console.error(`Failed to load track: ${t.name}`, audio.error);
+        onTrackReady();
+      }, { once: true });
+
+      const source = ctx.createMediaElementSource(audio);
+      const gain = ctx.createGain();
+      source.connect(gain);
+      gain.connect(ctx.destination);
+
+      elements[t.name] = audio;
+      sources[t.name] = source;
+      gains[t.name] = gain;
+    });
+
+    audioElementsRef.current = elements;
+    sourceNodesRef.current = sources;
+    gainNodesRef.current = gains;
+
+    return () => {
+      clearTimeout(timeout);
+      Object.values(elements).forEach((a) => { a.pause(); a.src = ""; });
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      ctx.close();
+    };
+  }, [initialTracks, jobId]);
+
+  // Sync gain values
+  useEffect(() => {
+    initialTracks.forEach((t) => {
+      const gain = gainNodesRef.current[t.name];
+      if (!gain) return;
+      const isMuted = mutes[t.name];
+      const isSolo = solos[t.name];
+      const audible = !isMuted && (!anySolo || isSolo);
+      gain.gain.value = audible ? (volumes[t.name] ?? 1) : 0;
+    });
+  }, [volumes, mutes, solos, anySolo, initialTracks]);
+
+  // Animation frame for time
+  useEffect(() => {
+    const tick = () => {
+      const first = Object.values(audioElementsRef.current)[0];
+      if (first) setCurrentTime(first.currentTime);
+      animFrameRef.current = requestAnimationFrame(tick);
+    };
+    if (playing) {
+      animFrameRef.current = requestAnimationFrame(tick);
+    } else {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    }
+    return () => { if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); };
+  }, [playing]);
+
+  // Listen for ended
+  useEffect(() => {
+    const first = Object.values(audioElementsRef.current)[0];
+    if (!first) return;
+    const onEnded = () => { setPlaying(false); setCurrentTime(0); };
+    first.addEventListener("ended", onEnded);
+    return () => first.removeEventListener("ended", onEnded);
+  }, [loaded]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      // Don't handle if user is typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      switch (e.key) {
+        case " ":
+          e.preventDefault();
+          if (playing) pauseAll();
+          else playAll();
+          break;
+        case "m":
+        case "M":
+          if (trackOrder[selectedTrack]) {
+            const name = trackOrder[selectedTrack].name;
+            setMutes((prev) => ({ ...prev, [name]: !prev[name] }));
+          }
+          break;
+        case "s":
+        case "S":
+          if (trackOrder[selectedTrack]) {
+            const name = trackOrder[selectedTrack].name;
+            setSolos((prev) => ({ ...prev, [name]: !prev[name] }));
+          }
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          setSelectedTrack((prev) => Math.max(0, prev - 1));
+          break;
+        case "ArrowDown":
+          e.preventDefault();
+          setSelectedTrack((prev) => Math.min(trackOrder.length - 1, prev + 1));
+          break;
+        case "ArrowLeft":
+          if (trackOrder[selectedTrack]) {
+            const name = trackOrder[selectedTrack].name;
+            setVolumes((prev) => ({ ...prev, [name]: Math.max(0, (prev[name] ?? 1) - 0.05) }));
+          }
+          break;
+        case "ArrowRight":
+          if (trackOrder[selectedTrack]) {
+            const name = trackOrder[selectedTrack].name;
+            setVolumes((prev) => ({ ...prev, [name]: Math.min(1, (prev[name] ?? 1) + 0.05) }));
+          }
+          break;
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  });
+
+  const playAll = async () => {
+    if (audioCtxRef.current?.state === "suspended") {
+      await audioCtxRef.current.resume();
+    }
+    Object.values(audioElementsRef.current).forEach((a) => a.play());
+    setPlaying(true);
+  };
+
+  const pauseAll = () => {
+    Object.values(audioElementsRef.current).forEach((a) => a.pause());
+    setPlaying(false);
+  };
+
+  const stopAll = () => {
+    Object.values(audioElementsRef.current).forEach((a) => {
+      a.pause();
+      a.currentTime = 0;
+    });
+    setPlaying(false);
+    setCurrentTime(0);
+  };
+
+  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const time = ratio * duration;
+    Object.values(audioElementsRef.current).forEach((a) => { a.currentTime = time; });
+    setCurrentTime(time);
+  };
+
+  // Drag-to-reorder handlers
+  const handleDragStart = (index: number) => {
+    setDragIndex(index);
+  };
+
+  const handleDragOver = (index: number) => {
+    setDragTarget(index);
+  };
+
+  const handleDragEnd = () => {
+    if (dragIndex !== null && dragTarget !== null && dragIndex !== dragTarget) {
+      setTrackOrder((prev) => {
+        const newOrder = [...prev];
+        const [moved] = newOrder.splice(dragIndex, 1);
+        newOrder.splice(dragTarget, 0, moved);
+        return newOrder;
+      });
+    }
+    setDragIndex(null);
+    setDragTarget(null);
+  };
+
+  const handleDownloadMix = async () => {
+    setMixingDown(true);
+    try {
+      const volumeMap: Record<string, number> = {};
+      initialTracks.forEach((t) => {
+        const isMuted = mutes[t.name];
+        const isSolo = solos[t.name];
+        const audible = !isMuted && (!anySolo || isSolo);
+        volumeMap[t.name] = audible ? (volumes[t.name] ?? 1) : 0;
+      });
+
+      const res = await fetch(`${API}/api/tracks/${jobId}/mix`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ volumes: volumeMap, format: exportFormat }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Mix failed");
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const ext = exportFormat === "wav" ? ".wav" : exportFormat === "mp3" ? ".mp3" : ".flac";
+      a.download = `${fileName.replace(/\.[^.]+$/, "")}_custom_mix${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert("Failed to download mix: " + err.message);
+    }
+    setMixingDown(false);
+  };
+
+  return (
+    <div className="mixer" role="region" aria-label="Audio mixer">
+      {/* Transport bar */}
+      <div className="transport" role="toolbar" aria-label="Playback controls">
+        <div className="transport-buttons">
+          <button className="transport-btn" onClick={stopAll} title="Stop" disabled={!loaded} aria-label="Stop">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+          </button>
+          <button className="transport-btn play-btn" onClick={playing ? pauseAll : playAll} title={playing ? "Pause" : "Play"} disabled={!loaded} aria-label={playing ? "Pause" : "Play"}>
+            {playing ? (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+            ) : (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6,4 20,12 6,20" /></svg>
+            )}
+          </button>
+        </div>
+
+        <span className="transport-time" aria-label="Current time">{formatTime(currentTime)}</span>
+
+        <div className="transport-progress" onClick={loaded ? seek : undefined} role="slider" aria-label="Seek" aria-valuemin={0} aria-valuemax={duration} aria-valuenow={currentTime}>
+          <div className="progress-track">
+            <div className="progress-fill" style={{ width: duration ? `${(currentTime / duration) * 100}%` : "0%" }} />
+          </div>
+        </div>
+
+        <span className="transport-time" aria-label="Duration">{formatTime(duration)}</span>
+      </div>
+
+      {!loaded && (
+        <div className="mixer-loading">
+          <div className="spinner" />
+          <span>Loading tracks...</span>
+        </div>
+      )}
+
+      {/* Keyboard shortcut hint */}
+      {loaded && (
+        <div className="shortcut-hint" aria-hidden="true">
+          <span>Space: Play/Pause</span>
+          <span>M: Mute</span>
+          <span>S: Solo</span>
+          <span>Arrows: Navigate/Volume</span>
+        </div>
+      )}
+
+      {/* Channel strips */}
+      <div className="channel-strips" role="list" aria-label="Track channels">
+        {trackOrder.map((t, i) => (
+          <ChannelStrip
+            key={t.name}
+            track={t}
+            jobId={jobId}
+            volume={volumes[t.name] ?? 1}
+            muted={mutes[t.name] ?? false}
+            solo={solos[t.name] ?? false}
+            anySolo={anySolo}
+            exportFormat={exportFormat}
+            onVolumeChange={(v) => setVolumes((prev) => ({ ...prev, [t.name]: v }))}
+            onMuteToggle={() => setMutes((prev) => ({ ...prev, [t.name]: !prev[t.name] }))}
+            onSoloToggle={() => setSolos((prev) => ({ ...prev, [t.name]: !prev[t.name] }))}
+            index={i}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+            isDragTarget={dragTarget === i}
+          />
+        ))}
+      </div>
+
+      {/* Export format selector */}
+      <div className="export-format">
+        <label className="export-label" id="export-format-label">Export format:</label>
+        <div className="format-buttons" role="radiogroup" aria-labelledby="export-format-label">
+          {(["wav", "mp3", "flac"] as ExportFormat[]).map((fmt) => (
+            <button
+              key={fmt}
+              className={`format-btn ${exportFormat === fmt ? "active" : ""}`}
+              onClick={() => setExportFormat(fmt)}
+              role="radio"
+              aria-checked={exportFormat === fmt}
+            >
+              {fmt.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Download actions */}
+      <div className="download-section">
+        <h3 className="download-title">Download</h3>
+        <div className="download-buttons">
+          <a
+            href={`${API}/api/tracks/${jobId}/download-all${exportFormat !== "wav" ? `?format=${exportFormat}` : ""}`}
+            className="btn btn-primary"
+            download
+            aria-label="Download all tracks as ZIP"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            All Tracks (ZIP)
+          </a>
+          <button
+            className="btn btn-accent"
+            onClick={handleDownloadMix}
+            disabled={mixingDown}
+            aria-label="Download custom mix"
+          >
+            {mixingDown ? (
+              <>
+                <div className="spinner-small" />
+                Mixing...
+              </>
+            ) : (
+              <>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M9 18V5l12-2v13" />
+                  <circle cx="6" cy="18" r="3" />
+                  <circle cx="18" cy="16" r="3" />
+                </svg>
+                Download Current Mix
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---- Progress Display ---- */
+interface ProgressDisplayProps {
+  progress: string;
+  status: AppStatus;
+}
+
+function ProgressDisplay({ progress, status }: ProgressDisplayProps) {
+  return (
+    <div className="processing" role="status" aria-live="polite">
+      <div className="spinner" aria-hidden="true" />
+      <p className="progress-text">{progress}</p>
+      {status === "queued" && (
+        <p className="progress-subtext">Your file is in the processing queue. It will start automatically.</p>
+      )}
+      {status === "processing" && (
+        <p className="progress-subtext">AI is separating your tracks. This usually takes 2-5 minutes.</p>
+      )}
+    </div>
+  );
+}
+
+/* ---- Main App ---- */
+export default function App() {
+  const [file, setFile] = useState<File | null>(null);
+  const [model, setModel] = useState("htdemucs");
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [status, setStatus] = useState<AppStatus>("idle");
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState("");
+  const [theme, toggleTheme] = useTheme();
+
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  const reset = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    setFile(null);
+    setJobId(null);
+    setStatus("idle");
+    setTracks([]);
+    setError(null);
+    setProgress("");
+  };
+
+  const handleFileSelected = (f: File) => {
+    setFile(f);
+    setError(null);
+  };
+
+  const startSSE = useCallback((id: string) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const es = new EventSource(`${API}/api/progress/${id}`);
+    eventSourceRef.current = es;
+
+    es.onmessage = (event) => {
+      try {
+        const data: ProgressEvent = JSON.parse(event.data);
+        if (data.progress) setProgress(data.progress);
+
+        if (data.status === "done" && data.tracks) {
+          setTracks(data.tracks);
+          setStatus("done");
+          setProgress("");
+          es.close();
+        } else if (data.status === "error") {
+          setStatus("error");
+          setError(data.error || "Processing failed");
+          setProgress("");
+          es.close();
+        } else if (data.status === "processing") {
+          setStatus("processing");
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    };
+
+    es.onerror = () => {
+      // SSE disconnected — fall back to polling
+      es.close();
+      pollStatus(id);
+    };
+  }, []);
+
+  const pollStatus = useCallback(async (id: string) => {
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API}/api/status/${id}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.status === "done") {
+          setTracks(data.tracks);
+          setStatus("done");
+          setProgress("");
+          return;
+        }
+        if (data.status === "error") {
+          setStatus("error");
+          setError(data.error || "Processing failed");
+          setProgress("");
+          return;
+        }
+        if (data.progress) setProgress(data.progress);
+        setTimeout(poll, 3000);
+      } catch {
+        setTimeout(poll, 5000);
+      }
+    };
+    poll();
+  }, []);
+
+  const handleSplit = async () => {
+    if (!file) return;
+
+    try {
+      // Upload
+      setStatus("uploading");
+      setProgress("Uploading file...");
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const uploadRes = await fetch(`${API}/api/upload`, { method: "POST", body: formData });
+      if (!uploadRes.ok) {
+        const err = await uploadRes.json();
+        throw new Error(err.error || "Upload failed");
+      }
+      const { jobId: id } = await uploadRes.json();
+      setJobId(id);
+
+      // Split
+      setStatus("queued");
+      setProgress("Adding to processing queue...");
+
+      const splitRes = await fetch(`${API}/api/split/${id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+
+      if (!splitRes.ok) {
+        const err = await splitRes.json();
+        throw new Error(err.error || "Splitting failed");
+      }
+
+      // Start SSE for real-time progress
+      startSSE(id);
+
+    } catch (err: any) {
+      setStatus("error");
+      setError(err.message);
+      setProgress("");
+    }
+  };
+
+  // Cleanup SSE on unmount
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
+  }, []);
+
+  return (
+    <div className="app" data-theme={theme}>
+      <header className="header">
+        <div className="header-row">
+          <h1>Track Splitter</h1>
+          <button
+            className="theme-toggle"
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <circle cx="12" cy="12" r="5" />
+                <line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" />
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                <line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" />
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+              </svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            )}
+          </button>
+        </div>
+        <p className="subtitle">
+          Upload a song and split it into individual instrument tracks using AI
+        </p>
+      </header>
+
+      <main className="main">
+        {status === "done" ? (
+          <div className="results">
+            <div className="results-header">
+              <div>
+                <h2>Separated Tracks</h2>
+                <p className="results-filename">{file?.name}</p>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={reset}>
+                Split Another Song
+              </button>
+            </div>
+
+            <Mixer tracks={tracks} jobId={jobId!} fileName={file?.name || "track"} />
+          </div>
+        ) : (
+          <div className="upload-section">
+            <UploadZone
+              onFileSelected={handleFileSelected}
+              disabled={status === "uploading" || status === "processing" || status === "queued"}
+            />
+
+            {file && status === "idle" && (
+              <div className="file-info">
+                <span className="file-name">{file.name}</span>
+                <span className="file-size">{formatBytes(file.size)}</span>
+              </div>
+            )}
+
+            {(status === "idle" && file) && (
+              <div className="options">
+                <label className="model-label" id="model-select-label">Separation model:</label>
+                <div className="model-select" role="radiogroup" aria-labelledby="model-select-label">
+                  {MODELS.map((m) => (
+                    <button
+                      key={m.id}
+                      className={`model-option ${model === m.id ? "active" : ""}`}
+                      onClick={() => setModel(m.id)}
+                      role="radio"
+                      aria-checked={model === m.id}
+                    >
+                      <strong>{m.label}</strong>
+                      <span>{m.desc}</span>
+                    </button>
+                  ))}
+                </div>
+                <button className="btn btn-primary btn-split" onClick={handleSplit}>
+                  Split Track
+                </button>
+              </div>
+            )}
+
+            {(status === "uploading" || status === "processing" || status === "queued") && (
+              <ProgressDisplay progress={progress} status={status} />
+            )}
+
+            {status === "error" && (
+              <div className="error-box" role="alert">
+                <p>{error}</p>
+                <button className="btn btn-secondary" onClick={reset}>
+                  Try Again
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      <footer className="footer">
+        Powered by <a href="https://github.com/facebookresearch/demucs" target="_blank" rel="noreferrer">Demucs</a> by Meta Research
+      </footer>
+    </div>
+  );
+}
