@@ -31,6 +31,46 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def recover_job(job_id: str) -> dict | None:
+    """Try to recover a job from disk if it exists but is not in memory."""
+    job_dir = UPLOAD_DIR / job_id
+    if not job_dir.is_dir():
+        return None
+    # Find the uploaded file
+    files = [f for f in job_dir.iterdir() if f.is_file()]
+    if not files:
+        return None
+    filename = files[0].name
+
+    # Check if output tracks already exist
+    output_path = OUTPUT_DIR / job_id
+    tracks = []
+    status = "uploaded"
+    if output_path.exists():
+        for candidate in output_path.rglob("*.wav"):
+            tracks.append({"name": candidate.stem, "filename": candidate.name})
+        if tracks:
+            status = "done"
+
+    job = {
+        "id": job_id,
+        "filename": filename,
+        "status": status,
+        "tracks": sorted(tracks, key=lambda t: t["name"]),
+        "error": None,
+    }
+    jobs[job_id] = job
+    return job
+
+
+def get_job(job_id: str) -> dict | None:
+    """Get a job from memory, recovering from disk if needed."""
+    job = jobs.get(job_id)
+    if job:
+        return job
+    return recover_job(job_id)
+
+
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
@@ -66,7 +106,7 @@ def upload():
 
 @app.route("/api/split/<job_id>", methods=["POST"])
 def split(job_id: str):
-    job = jobs.get(job_id)
+    job = get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
@@ -136,7 +176,7 @@ def split(job_id: str):
 
 @app.route("/api/status/<job_id>", methods=["GET"])
 def status(job_id: str):
-    job = jobs.get(job_id)
+    job = get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify(job)
@@ -144,7 +184,7 @@ def status(job_id: str):
 
 @app.route("/api/tracks/<job_id>/<track_filename>", methods=["GET"])
 def download_track(job_id: str, track_filename: str):
-    job = jobs.get(job_id)
+    job = get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
@@ -161,7 +201,7 @@ def download_track(job_id: str, track_filename: str):
 
 @app.route("/api/tracks/<job_id>/download-all", methods=["GET"])
 def download_all(job_id: str):
-    job = jobs.get(job_id)
+    job = get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
@@ -179,7 +219,7 @@ def download_all(job_id: str):
 
 @app.route("/api/tracks/<job_id>/mix", methods=["POST"])
 def download_mix(job_id: str):
-    job = jobs.get(job_id)
+    job = get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
