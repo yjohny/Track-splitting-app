@@ -1,6 +1,5 @@
 flask>=3.0
 flask-cors>=4.0
 gunicorn>=21.2
-torchaudio<2.5
 demucs>=4.0
-# torch and torchaudio are installed separately in Dockerfile
+# torch, torchaudio, torchcodec are installed separately in Dockerfile
