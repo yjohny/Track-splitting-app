@@ -256,6 +256,8 @@ function ChannelStrip({
             step="0.01"
             value={muted ? 0 : volume}
             onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
+            onDragStart={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
             style={{ "--track-color": color } as React.CSSProperties}
             aria-label={`${track.name} volume`}
           />
@@ -306,6 +308,7 @@ interface MixerProps {
 function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const gainNodesRef = useRef<Record<string, GainNode>>({});
+  const masterGainRef = useRef<GainNode | null>(null);
   const audioElementsRef = useRef<Record<string, HTMLAudioElement>>({});
   const sourceNodesRef = useRef<Record<string, MediaElementAudioSourceNode>>({});
 
@@ -346,6 +349,12 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
   useEffect(() => {
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
     audioCtxRef.current = ctx;
+
+    // Master gain node to prevent clipping when multiple tracks are summed
+    const masterGain = ctx.createGain();
+    masterGain.gain.value = 1 / Math.max(1, initialTracks.length);
+    masterGain.connect(ctx.destination);
+    masterGainRef.current = masterGain;
 
     const elements: Record<string, HTMLAudioElement> = {};
     const sources: Record<string, MediaElementAudioSourceNode> = {};
@@ -390,7 +399,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
       const source = ctx.createMediaElementSource(audio);
       const gain = ctx.createGain();
       source.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(masterGain);
 
       elements[t.name] = audio;
       sources[t.name] = source;
@@ -411,6 +420,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
 
   // Sync gain values
   useEffect(() => {
+    let audibleCount = 0;
     initialTracks.forEach((t) => {
       const gain = gainNodesRef.current[t.name];
       if (!gain) return;
@@ -418,7 +428,12 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
       const isSolo = solos[t.name];
       const audible = !isMuted && (!anySolo || isSolo);
       gain.gain.value = audible ? (volumes[t.name] ?? 1) : 0;
+      if (audible && (volumes[t.name] ?? 1) > 0) audibleCount++;
     });
+    // Scale master gain by number of audible tracks to prevent clipping
+    if (masterGainRef.current) {
+      masterGainRef.current.gain.value = 1 / Math.max(1, audibleCount);
+    }
   }, [volumes, mutes, solos, anySolo, initialTracks]);
 
   // Animation frame for time
