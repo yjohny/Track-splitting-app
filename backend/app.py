@@ -87,7 +87,7 @@ def split(job_id: str):
     try:
         result = subprocess.run(
             [
-                "python", "-m", "demucs",
+                "python", "/app/backend/demucs_wrapper.py",
                 "--out", str(output_path),
                 "--name", model,
                 "-n", model,
