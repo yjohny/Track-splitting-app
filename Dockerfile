@@ -19,9 +19,9 @@ RUN apt-get update && \
 # Install Python dependencies
 COPY backend/requirements.txt ./
 RUN pip install --progress-bar on \
-    torch torchaudio torchcodec \
+    torch torchaudio \
     --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --progress-bar on -r requirements.txt
+    pip install --progress-bar on soundfile -r requirements.txt
 
 # Pre-download htdemucs model so the container works fully offline
 RUN mkdir -p /root/.cache/torch/hub/checkpoints && \
