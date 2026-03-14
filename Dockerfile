@@ -26,7 +26,7 @@ COPY backend/requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --progress-bar on \
     -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn \
-    torch && \
+    torch torchcodec && \
     pip install --progress-bar on \
     -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn \
     -r requirements.txt
