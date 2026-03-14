@@ -34,10 +34,11 @@ COPY backend/ ./backend/
 COPY --from=frontend-build /app/frontend/build ./backend/static
 
 # Create data directories
-RUN mkdir -p /app/uploads /app/outputs
+RUN mkdir -p /app/uploads /app/outputs /app/data
 
 ENV UPLOAD_DIR=/app/uploads
 ENV OUTPUT_DIR=/app/outputs
+ENV DB_PATH=/app/data/jobs.db
 ENV PORT=5000
 
 EXPOSE 5000

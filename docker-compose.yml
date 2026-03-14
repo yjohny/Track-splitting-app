@@ -6,9 +6,14 @@ services:
     volumes:
       - uploads:/app/uploads
       - outputs:/app/outputs
+      - data:/app/data
     environment:
       - UPLOAD_DIR=/app/uploads
       - OUTPUT_DIR=/app/outputs
+      - DB_PATH=/app/data/jobs.db
+      - CLEANUP_MAX_AGE_HOURS=24
+      - RATE_LIMIT_MAX=10
+      - RATE_LIMIT_WINDOW=3600
     deploy:
       resources:
         limits:
@@ -17,3 +22,4 @@ services:
 volumes:
   uploads:
   outputs:
+  data:
