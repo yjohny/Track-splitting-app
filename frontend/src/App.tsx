@@ -423,9 +423,20 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
 
   // Animation frame for time
   useEffect(() => {
+    const DRIFT_THRESHOLD = 0.05; // 50ms — correct if any track drifts more than this
     const tick = () => {
-      const first = Object.values(audioElementsRef.current)[0];
-      if (first) setCurrentTime(first.currentTime);
+      const els = Object.values(audioElementsRef.current);
+      const first = els[0];
+      if (first) {
+        const refTime = first.currentTime;
+        setCurrentTime(refTime);
+        // Drift correction: re-sync any track that has drifted from the reference
+        for (let i = 1; i < els.length; i++) {
+          if (Math.abs(els[i].currentTime - refTime) > DRIFT_THRESHOLD) {
+            els[i].currentTime = refTime;
+          }
+        }
+      }
       animFrameRef.current = requestAnimationFrame(tick);
     };
     if (playing) {
@@ -501,7 +512,14 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     if (audioCtxRef.current?.state === "suspended") {
       await audioCtxRef.current.resume();
     }
-    Object.values(audioElementsRef.current).forEach((a) => a.play());
+    // Sync all tracks to the same currentTime before playing to avoid drift
+    const els = Object.values(audioElementsRef.current);
+    if (els.length > 0) {
+      const syncTime = els[0].currentTime;
+      els.forEach((a) => { a.currentTime = syncTime; });
+    }
+    // Collect all play promises and fire them as close together as possible
+    els.forEach((a) => a.play());
     setPlaying(true);
   };
 
@@ -523,7 +541,12 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     const rect = e.currentTarget.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const time = ratio * duration;
-    Object.values(audioElementsRef.current).forEach((a) => { a.currentTime = time; });
+    const els = Object.values(audioElementsRef.current);
+    // Pause all before seeking to avoid desync from mid-playback seeks
+    const wasPlaying = playing;
+    if (wasPlaying) els.forEach((a) => a.pause());
+    els.forEach((a) => { a.currentTime = time; });
+    if (wasPlaying) els.forEach((a) => a.play());
     setCurrentTime(time);
   };
 
