@@ -18,8 +18,7 @@ RUN apt-get update && \
 
 # Install Python dependencies
 COPY backend/requirements.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --progress-bar on torch "torchaudio<2.5" && \
+RUN pip install --progress-bar on torch "torchaudio<2.5" && \
     pip install --progress-bar on -r requirements.txt
 
 # Pre-download htdemucs model so the container works fully offline
