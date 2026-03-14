@@ -196,7 +196,7 @@ def download_track(job_id: str, track_filename: str):
     if not matches:
         return jsonify({"error": "Track not found"}), 404
 
-    return send_file(str(matches[0]), mimetype="audio/wav")
+    return send_file(str(matches[0]), mimetype="audio/wav", conditional=True)
 
 
 @app.route("/api/tracks/<job_id>/download-all", methods=["GET"])

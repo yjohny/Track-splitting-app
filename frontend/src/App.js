@@ -180,22 +180,43 @@ function Mixer({ tracks, jobId, fileName }) {
     const sources = {};
     const gains = {};
     let loadedCount = 0;
+    let hasFinalized = false;
+
+    const finalize = () => {
+      if (hasFinalized) return;
+      hasFinalized = true;
+      const maxDur = Math.max(...tracks.map((tr) => {
+        const el = elements[tr.name];
+        return el && isFinite(el.duration) ? el.duration : 0;
+      }));
+      setDuration(maxDur);
+      setLoaded(true);
+    };
+
+    const onTrackReady = () => {
+      loadedCount++;
+      if (loadedCount === tracks.length) finalize();
+    };
+
+    // Fallback timeout — if tracks haven't loaded after 30s, force-show the mixer
+    const timeout = setTimeout(() => {
+      if (!hasFinalized) {
+        console.warn("Audio loading timed out — showing mixer with available tracks");
+        finalize();
+      }
+    }, 30000);
 
     tracks.forEach((t) => {
       const audio = new Audio(`${API}/api/tracks/${jobId}/${t.filename}`);
       audio.crossOrigin = "anonymous";
       audio.preload = "auto";
 
-      audio.addEventListener("canplaythrough", () => {
-        loadedCount++;
-        if (loadedCount === tracks.length) {
-          const maxDur = Math.max(...tracks.map((tr) => {
-            const el = elements[tr.name];
-            return el ? el.duration : 0;
-          }));
-          setDuration(maxDur);
-          setLoaded(true);
-        }
+      // Use loadeddata (fires earlier, more reliable) with canplaythrough as bonus
+      audio.addEventListener("loadeddata", onTrackReady, { once: true });
+
+      audio.addEventListener("error", () => {
+        console.error(`Failed to load track: ${t.name}`, audio.error);
+        onTrackReady(); // Count it so we don't block forever
       }, { once: true });
 
       const source = ctx.createMediaElementSource(audio);
@@ -213,6 +234,7 @@ function Mixer({ tracks, jobId, fileName }) {
     gainNodesRef.current = gains;
 
     return () => {
+      clearTimeout(timeout);
       Object.values(elements).forEach((a) => { a.pause(); a.src = ""; });
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       ctx.close();
