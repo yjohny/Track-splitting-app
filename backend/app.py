@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import subprocess
 import shutil
@@ -118,6 +119,39 @@ def db_update_progress(job_id: str, progress: str):
     conn.close()
 
 
+def format_progress(line: str) -> str:
+    """Clean up raw tqdm/demucs progress output for display.
+
+    Turns e.g. '21%|████| 52.65/251.54999999999998 [00:29<01:44, 1.90seconds/s]'
+    into '21% | 52.7/251.5 seconds [00:29<01:44, 1.90 seconds/s]'
+    """
+    # Match tqdm-style: PERCENT%|bar| CURRENT/TOTAL [TIME<ETA, RATE unit/s]
+    m = re.match(
+        r"(\d+)%\|[^|]*\|\s*([\d.]+)/([\d.]+)\s*\[([^,\]]+),\s*([\d.]+)([\w]*)/s\]",
+        line,
+    )
+    if not m:
+        return line
+
+    pct = int(m.group(1))
+    current = float(m.group(2))
+    total = float(m.group(3))
+    time_info = m.group(4)  # e.g. "00:29<01:44"
+    rate = float(m.group(5))
+    unit = m.group(6) or "it"
+
+    # Add a space before the unit if missing (e.g. "seconds" -> " seconds")
+    if unit and not unit[0] == " ":
+        unit_display = f" {unit}"
+    else:
+        unit_display = unit
+
+    return (
+        f"{pct}% | {current:.1f}/{total:.1f} seconds "
+        f"[{time_info}, {rate:.2f}{unit_display}/s]"
+    )
+
+
 # ---- SSE Progress Events ----
 # Per-job event channels for SSE streaming
 _progress_events: dict[str, list] = {}  # job_id -> list of subscriber queues
@@ -208,11 +242,12 @@ def _run_split(job_id: str, model: str):
             if not line:
                 continue
             # Parse demucs progress (typically shows percentage)
-            progress_text = line
             if "%" in line:
-                progress_text = line
+                progress_text = format_progress(line)
             elif "Separated" in line or "separated" in line:
                 progress_text = "Finalizing..."
+            else:
+                progress_text = line
 
             db_update_progress(job_id, progress_text)
             publish_progress(job_id, {"status": "processing", "progress": progress_text})
