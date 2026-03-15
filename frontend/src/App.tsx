@@ -122,7 +122,7 @@ interface WaveformProps {
   height?: number;
 }
 
-function Waveform({ audioUrl, color, height = 40 }: WaveformProps) {
+const Waveform = React.memo(function Waveform({ audioUrl, color, height = 40 }: WaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [waveformData, setWaveformData] = useState<number[] | null>(null);
 
@@ -195,7 +195,7 @@ function Waveform({ audioUrl, color, height = 40 }: WaveformProps) {
       aria-hidden="true"
     />
   );
-}
+});
 
 /* ---- Channel Strip ---- */
 interface ChannelStripProps {
@@ -204,9 +204,9 @@ interface ChannelStripProps {
   muted: boolean;
   solo: boolean;
   anySolo: boolean;
-  onVolumeChange: (v: number) => void;
-  onMuteToggle: () => void;
-  onSoloToggle: () => void;
+  onVolumeChange: (name: string, v: number) => void;
+  onMuteToggle: (name: string) => void;
+  onSoloToggle: (name: string) => void;
   jobId: string;
   exportFormat: ExportFormat;
   index: number;
@@ -216,7 +216,7 @@ interface ChannelStripProps {
   isDragTarget: boolean;
 }
 
-function ChannelStrip({
+const ChannelStrip = React.memo(function ChannelStrip({
   track, volume, muted, solo, anySolo,
   onVolumeChange, onMuteToggle, onSoloToggle,
   jobId, exportFormat, index,
@@ -255,7 +255,7 @@ function ChannelStrip({
             max="1"
             step="0.01"
             value={muted ? 0 : volume}
-            onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
+            onChange={(e) => onVolumeChange(track.name, parseFloat(e.target.value))}
             onDragStart={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
             style={{ "--track-color": color } as React.CSSProperties}
@@ -270,7 +270,7 @@ function ChannelStrip({
       <div className="channel-buttons">
         <button
           className={`ch-btn ch-mute ${muted ? "active" : ""}`}
-          onClick={onMuteToggle}
+          onClick={() => onMuteToggle(track.name)}
           title={muted ? "Unmute" : "Mute"}
           aria-label={muted ? `Unmute ${track.name}` : `Mute ${track.name}`}
           aria-pressed={muted}
@@ -279,7 +279,7 @@ function ChannelStrip({
         </button>
         <button
           className={`ch-btn ch-solo ${solo ? "active" : ""}`}
-          onClick={onSoloToggle}
+          onClick={() => onSoloToggle(track.name)}
           title={solo ? "Unsolo" : "Solo"}
           aria-label={solo ? `Unsolo ${track.name}` : `Solo ${track.name}`}
           aria-pressed={solo}
@@ -296,7 +296,7 @@ function ChannelStrip({
       </div>
     </div>
   );
-}
+});
 
 /* ---- Mixer component ---- */
 interface MixerProps {
@@ -325,6 +325,8 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
   const [selectedTrack, setSelectedTrack] = useState(0);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragTarget, setDragTarget] = useState<number | null>(null);
+  const [mixError, setMixError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState<Record<string, boolean>>({});
   const animFrameRef = useRef<number | null>(null);
 
   const anySolo = Object.values(solos).some(Boolean);
@@ -499,11 +501,35 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
           break;
         case "ArrowUp":
           e.preventDefault();
-          setSelectedTrack((prev) => Math.max(0, prev - 1));
+          if (e.ctrlKey || e.metaKey) {
+            // Ctrl+Up: move track up
+            if (selectedTrack > 0) {
+              setTrackOrder((prev) => {
+                const newOrder = [...prev];
+                [newOrder[selectedTrack - 1], newOrder[selectedTrack]] = [newOrder[selectedTrack], newOrder[selectedTrack - 1]];
+                return newOrder;
+              });
+              setSelectedTrack((prev) => prev - 1);
+            }
+          } else {
+            setSelectedTrack((prev) => Math.max(0, prev - 1));
+          }
           break;
         case "ArrowDown":
           e.preventDefault();
-          setSelectedTrack((prev) => Math.min(trackOrder.length - 1, prev + 1));
+          if (e.ctrlKey || e.metaKey) {
+            // Ctrl+Down: move track down
+            if (selectedTrack < trackOrder.length - 1) {
+              setTrackOrder((prev) => {
+                const newOrder = [...prev];
+                [newOrder[selectedTrack], newOrder[selectedTrack + 1]] = [newOrder[selectedTrack + 1], newOrder[selectedTrack]];
+                return newOrder;
+              });
+              setSelectedTrack((prev) => prev + 1);
+            }
+          } else {
+            setSelectedTrack((prev) => Math.min(trackOrder.length - 1, prev + 1));
+          }
           break;
         case "ArrowLeft":
           if (trackOrder[selectedTrack]) {
@@ -565,16 +591,28 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     setCurrentTime(time);
   };
 
+  const handleVolumeChange = useCallback((name: string, v: number) => {
+    setVolumes((prev) => ({ ...prev, [name]: v }));
+  }, []);
+
+  const handleMuteToggle = useCallback((name: string) => {
+    setMutes((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
+
+  const handleSoloToggle = useCallback((name: string) => {
+    setSolos((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
+
   // Drag-to-reorder handlers
-  const handleDragStart = (index: number) => {
+  const handleDragStart = useCallback((index: number) => {
     setDragIndex(index);
-  };
+  }, []);
 
-  const handleDragOver = (index: number) => {
+  const handleDragOver = useCallback((index: number) => {
     setDragTarget(index);
-  };
+  }, []);
 
-  const handleDragEnd = () => {
+  const handleDragEnd = useCallback(() => {
     if (dragIndex !== null && dragTarget !== null && dragIndex !== dragTarget) {
       setTrackOrder((prev) => {
         const newOrder = [...prev];
@@ -585,10 +623,11 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     }
     setDragIndex(null);
     setDragTarget(null);
-  };
+  }, [dragIndex, dragTarget]);
 
   const handleDownloadMix = async () => {
     setMixingDown(true);
+    setMixError(null);
     try {
       const volumeMap: Record<string, number> = {};
       initialTracks.forEach((t) => {
@@ -618,9 +657,29 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
       a.click();
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      alert("Failed to download mix: " + err.message);
+      setMixError(err.message || "Failed to download mix");
     }
     setMixingDown(false);
+  };
+
+  const handleDownloadAll = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    const url = (e.currentTarget as HTMLAnchorElement).href;
+    setDownloading((prev) => ({ ...prev, all: true }));
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `${fileName.replace(/\.[^.]+$/, "")}_tracks.zip`;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      setMixError("Failed to download tracks. Please try again.");
+    }
+    setDownloading((prev) => ({ ...prev, all: false }));
   };
 
   return (
@@ -665,6 +724,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
           <span>M: Mute</span>
           <span>S: Solo</span>
           <span>Arrows: Navigate/Volume</span>
+          <span>Ctrl+\u2191\u2193: Reorder</span>
         </div>
       )}
 
@@ -680,9 +740,9 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
             solo={solos[t.name] ?? false}
             anySolo={anySolo}
             exportFormat={exportFormat}
-            onVolumeChange={(v) => setVolumes((prev) => ({ ...prev, [t.name]: v }))}
-            onMuteToggle={() => setMutes((prev) => ({ ...prev, [t.name]: !prev[t.name] }))}
-            onSoloToggle={() => setSolos((prev) => ({ ...prev, [t.name]: !prev[t.name] }))}
+            onVolumeChange={handleVolumeChange}
+            onMuteToggle={handleMuteToggle}
+            onSoloToggle={handleSoloToggle}
             index={i}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
@@ -710,6 +770,14 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
         </div>
       </div>
 
+      {/* Download error */}
+      {mixError && (
+        <div className="mixer-error" role="alert">
+          <p>{mixError}</p>
+          <button className="mixer-error-dismiss" onClick={() => setMixError(null)} aria-label="Dismiss error">&times;</button>
+        </div>
+      )}
+
       {/* Download actions */}
       <div className="download-section">
         <h3 className="download-title">Download</h3>
@@ -717,15 +785,24 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
           <a
             href={`${API}/api/tracks/${jobId}/download-all${exportFormat !== "wav" ? `?format=${exportFormat}` : ""}`}
             className="btn btn-primary"
-            download
+            onClick={handleDownloadAll}
             aria-label="Download all tracks as ZIP"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            All Tracks (ZIP)
+            {downloading.all ? (
+              <>
+                <div className="spinner-small" />
+                Downloading...
+              </>
+            ) : (
+              <>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                All Tracks (ZIP)
+              </>
+            )}
           </a>
           <button
             className="btn btn-accent"
@@ -923,6 +1000,17 @@ export default function App() {
       }
     };
   }, []);
+
+  // Warn before navigating away during processing or with results
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (status === "uploading" || status === "processing" || status === "queued" || status === "done") {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [status]);
 
   return (
     <div className="app" data-theme={theme}>

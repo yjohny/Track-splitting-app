@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import shutil
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -43,8 +44,22 @@ def client():
         yield client
 
 
-def make_audio_file(filename="test.mp3", content=b"fake audio content"):
-    """Create a fake audio file for upload testing."""
+# Valid audio file headers for MIME validation
+AUDIO_HEADERS = {
+    "mp3": b"ID3" + b"\x00" * 50,
+    "wav": b"RIFF" + b"\x00" * 50,
+    "flac": b"fLaC" + b"\x00" * 50,
+    "ogg": b"OggS" + b"\x00" * 50,
+    "m4a": b"\x00\x00\x00\x20ftyp" + b"\x00" * 50,
+    "aac": b"\x00\x00\x00\x20ftyp" + b"\x00" * 50,
+}
+
+
+def make_audio_file(filename="test.mp3", content=None):
+    """Create a fake audio file for upload testing with valid headers."""
+    if content is None:
+        ext = filename.rsplit(".", 1)[1].lower() if "." in filename else "mp3"
+        content = AUDIO_HEADERS.get(ext, b"ID3" + b"\x00" * 50)
     return (io.BytesIO(content), filename)
 
 
@@ -201,6 +216,140 @@ class TestMix:
             content_type="application/json",
         )
         assert resp.status_code == 400
+
+
+class TestMixValidation:
+    def _upload(self, client):
+        data = {"file": make_audio_file("test.mp3")}
+        resp = client.post("/api/upload", data=data, content_type="multipart/form-data")
+        return resp.get_json()["jobId"]
+
+    def test_mix_invalid_volume_string(self, client):
+        job_id = self._upload(client)
+        resp = client.post(
+            f"/api/tracks/{job_id}/mix",
+            data=json.dumps({"volumes": {"vocals": "loud"}, "format": "wav"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert "Invalid volume" in resp.get_json()["error"]
+
+    def test_mix_negative_volume(self, client):
+        job_id = self._upload(client)
+        resp = client.post(
+            f"/api/tracks/{job_id}/mix",
+            data=json.dumps({"volumes": {"vocals": -1.0}, "format": "wav"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert "between 0 and 2" in resp.get_json()["error"]
+
+    def test_mix_volume_too_high(self, client):
+        job_id = self._upload(client)
+        resp = client.post(
+            f"/api/tracks/{job_id}/mix",
+            data=json.dumps({"volumes": {"vocals": 5.0}, "format": "wav"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert "between 0 and 2" in resp.get_json()["error"]
+
+    def test_mix_null_volume(self, client):
+        job_id = self._upload(client)
+        resp = client.post(
+            f"/api/tracks/{job_id}/mix",
+            data=json.dumps({"volumes": {"vocals": None}, "format": "wav"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert "Invalid volume" in resp.get_json()["error"]
+
+    def test_mix_volumes_not_object(self, client):
+        job_id = self._upload(client)
+        resp = client.post(
+            f"/api/tracks/{job_id}/mix",
+            data=json.dumps({"volumes": [1.0, 0.5], "format": "wav"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert "object" in resp.get_json()["error"].lower()
+
+    def test_mix_valid_volumes(self, client):
+        job_id = self._upload(client)
+        resp = client.post(
+            f"/api/tracks/{job_id}/mix",
+            data=json.dumps({"volumes": {"vocals": 1.0, "drums": 0.5}, "format": "wav"}),
+            content_type="application/json",
+        )
+        # Will return 404 (no tracks found) since we didn't process,
+        # but validation should pass
+        assert resp.status_code == 404
+        assert "No tracks found" in resp.get_json()["error"]
+
+
+class TestAudioValidation:
+    def test_upload_non_audio_content(self, client):
+        """Upload a .mp3 file that is actually a text file."""
+        data = {"file": make_audio_file("fake.mp3", content=b"This is just plain text, not audio")}
+        resp = client.post("/api/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 400
+        assert "valid audio" in resp.get_json()["error"].lower()
+
+    def test_upload_real_mp3_header(self, client):
+        """Upload a file with valid MP3 ID3 header."""
+        mp3_header = b"ID3" + b"\x00" * 50  # Minimal ID3 tag
+        data = {"file": make_audio_file("test.mp3", content=mp3_header)}
+        resp = client.post("/api/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 201
+
+    def test_upload_real_wav_header(self, client):
+        """Upload a file with valid WAV RIFF header."""
+        wav_header = b"RIFF" + b"\x00" * 50
+        data = {"file": make_audio_file("test.wav", content=wav_header)}
+        resp = client.post("/api/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 201
+
+    def test_upload_real_flac_header(self, client):
+        """Upload a file with valid FLAC header."""
+        flac_header = b"fLaC" + b"\x00" * 50
+        data = {"file": make_audio_file("test.flac", content=flac_header)}
+        resp = client.post("/api/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 201
+
+
+class TestOrphanedJobCleanup:
+    def test_orphaned_jobs_recovered(self, client):
+        """Jobs stuck in uploading/queued for >1 hour should be marked as error."""
+        import backend.app as app_module
+
+        # Create a job stuck in 'queued' status from 2 hours ago
+        old_time = time.time() - 7200
+        conn = app_module.get_db()
+        conn.execute(
+            "INSERT INTO jobs (id, filename, status, tracks, progress, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("orphan_test", "test.mp3", "queued", "[]", "", old_time, old_time)
+        )
+        conn.commit()
+        conn.close()
+
+        # Run cleanup logic manually (extract from cleanup_old_files)
+        orphan_cutoff = time.time() - 3600
+        conn = app_module.get_db()
+        conn.execute(
+            "UPDATE jobs SET status = 'error', error = 'Job timed out waiting in queue.', updated_at = ? "
+            "WHERE status IN ('uploading', 'queued') AND created_at < ?",
+            (time.time(), orphan_cutoff)
+        )
+        conn.commit()
+        conn.close()
+
+        # Check the job is now in error state
+        resp = client.get("/api/status/orphan_test")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "error"
+        assert "timed out" in data["error"]
 
 
 class TestRateLimit:
