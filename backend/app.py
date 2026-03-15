@@ -11,13 +11,13 @@ import json
 from pathlib import Path
 from functools import wraps
 
-from flask import Flask, request, jsonify, send_file, send_from_directory, Response, stream_with_context
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response, stream_with_context, after_this_request
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
-CORS(app)
+CORS(app, origins=os.environ.get("ALLOWED_ORIGINS", "*").split(","))
 
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "../uploads"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "../outputs"))
@@ -297,6 +297,17 @@ def cleanup_old_files():
                 conn.commit()
                 conn.close()
 
+            # Recover orphaned jobs stuck in uploading/queued for more than 1 hour
+            orphan_cutoff = time.time() - 3600
+            conn = get_db()
+            conn.execute(
+                "UPDATE jobs SET status = 'error', error = 'Job timed out waiting in queue.', updated_at = ? "
+                "WHERE status IN ('uploading', 'queued') AND created_at < ?",
+                (time.time(), orphan_cutoff)
+            )
+            conn.commit()
+            conn.close()
+
         except Exception as e:
             print(f"Cleanup error: {e}")
 
@@ -341,8 +352,42 @@ def rate_limited(f):
 
 # ---- Helpers ----
 
+AUDIO_MAGIC_BYTES = {
+    b"ID3": "mp3",         # MP3 with ID3 tag
+    b"\xff\xfb": "mp3",   # MP3 frame sync
+    b"\xff\xf3": "mp3",   # MP3 frame sync
+    b"\xff\xf2": "mp3",   # MP3 frame sync
+    b"RIFF": "wav",        # WAV
+    b"fLaC": "flac",       # FLAC
+    b"OggS": "ogg",        # OGG
+    b"\x1aE\xdf\xa3": "webm",  # WebM/Matroska
+}
+
+
 def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def validate_audio_content(filepath: Path) -> bool:
+    """Check file header bytes to verify it looks like an audio file."""
+    try:
+        with open(filepath, "rb") as f:
+            header = f.read(12)
+        if len(header) < 4:
+            return False
+        # Check known audio signatures
+        for magic, _ in AUDIO_MAGIC_BYTES.items():
+            if header[:len(magic)] == magic:
+                return True
+        # M4A/AAC/MP4 container: check for 'ftyp' at byte 4
+        if header[4:8] == b"ftyp":
+            return True
+        # WMA: ASF header
+        if header[:4] == b"\x30\x26\xb2\x75":
+            return True
+        return False
+    except OSError:
+        return False
 
 
 def get_job(job_id: str) -> dict | None:
@@ -424,6 +469,10 @@ def upload():
     if filepath.stat().st_size == 0:
         shutil.rmtree(job_dir)
         return jsonify({"error": "The uploaded file is empty. Please select a valid audio file."}), 400
+
+    if not validate_audio_content(filepath):
+        shutil.rmtree(job_dir)
+        return jsonify({"error": "The file does not appear to be a valid audio file. Please upload a real audio file."}), 400
 
     job = {
         "id": job_id,
@@ -554,7 +603,16 @@ def download_track(job_id: str, track_filename: str):
         cmd = ["ffmpeg", "-y", "-i", source_path] + format_info["codec"] + [converted_path]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
+            os.unlink(converted_path)
             return jsonify({"error": "Format conversion failed"}), 500
+
+        @after_this_request
+        def _cleanup(response):
+            try:
+                os.unlink(converted_path)
+            except OSError:
+                pass
+            return response
 
         download_name = Path(track_filename).stem + format_info["ext"]
         return send_file(
@@ -564,6 +622,10 @@ def download_track(job_id: str, track_filename: str):
             download_name=download_name,
         )
     except subprocess.TimeoutExpired:
+        try:
+            os.unlink(converted_path)
+        except OSError:
+            pass
         return jsonify({"error": "Format conversion timed out"}), 504
 
 
@@ -616,6 +678,16 @@ def download_mix(job_id: str):
         return jsonify({"error": "Missing volumes map. Send JSON with a 'volumes' object mapping track names to volume levels."}), 400
 
     volume_map = request.json["volumes"]
+    if not isinstance(volume_map, dict):
+        return jsonify({"error": "Volumes must be an object mapping track names to numeric levels."}), 400
+    for name, vol in volume_map.items():
+        try:
+            v = float(vol)
+        except (TypeError, ValueError):
+            return jsonify({"error": f"Invalid volume value for track '{name}'. Must be a number."}), 400
+        if v < 0 or v > 2:
+            return jsonify({"error": f"Volume for '{name}' must be between 0 and 2."}), 400
+
     fmt = request.json.get("format", "wav").lower()
     if fmt not in EXPORT_FORMATS:
         return jsonify({"error": f"Unsupported format '{fmt}'. Available: {', '.join(EXPORT_FORMATS.keys())}"}), 400
@@ -655,7 +727,16 @@ def download_mix(job_id: str):
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
+            os.unlink(mix_path)
             return jsonify({"error": "Mix failed. This might happen with very long tracks or unusual audio formats."}), 500
+
+        @after_this_request
+        def _cleanup(response):
+            try:
+                os.unlink(mix_path)
+            except OSError:
+                pass
+            return response
 
         original_stem = Path(job["filename"]).stem
         return send_file(
@@ -665,8 +746,16 @@ def download_mix(job_id: str):
             download_name=f"{original_stem}_custom_mix{format_info['ext']}",
         )
     except subprocess.TimeoutExpired:
+        try:
+            os.unlink(mix_path)
+        except OSError:
+            pass
         return jsonify({"error": "Mix timed out. The track may be too long to process."}), 504
     except Exception as e:
+        try:
+            os.unlink(mix_path)
+        except OSError:
+            pass
         return jsonify({"error": f"Mix failed: {str(e)}"}), 500
 
 

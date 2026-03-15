@@ -732,6 +732,40 @@ body {
   outline-offset: 2px;
 }
 
+/* ---- Mixer Error ---- */
+.mixer-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: rgba(240, 78, 94, 0.1);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--error);
+  font-size: 0.9rem;
+}
+
+.mixer-error p {
+  margin: 0;
+  word-break: break-word;
+}
+
+.mixer-error-dismiss {
+  background: none;
+  border: none;
+  color: var(--error);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.mixer-error-dismiss:hover {
+  opacity: 1;
+}
+
 /* ---- Download Section ---- */
 .download-section {
   border-top: 1px solid var(--border);
