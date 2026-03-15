@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import subprocess
 import shutil
@@ -118,6 +119,48 @@ def db_update_progress(job_id: str, progress: str):
     conn.close()
 
 
+def _format_eta(eta_str: str) -> str:
+    """Turn a tqdm ETA like '01:44' or '1:02:30' into a human-friendly string."""
+    parts = eta_str.strip().split(":")
+    try:
+        if len(parts) == 3:
+            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+        elif len(parts) == 2:
+            h, m, s = 0, int(parts[0]), int(parts[1])
+        else:
+            return eta_str
+    except ValueError:
+        return eta_str
+
+    if h > 0:
+        return f"{h}h {m}m" if m else f"{h}h"
+    if m > 0:
+        return f"{m}m {s}s" if s else f"{m}m"
+    return f"{s}s"
+
+
+def format_progress(line: str) -> str:
+    """Clean up raw tqdm/demucs progress output for user-friendly display.
+
+    Turns e.g. '21%|████| 52.65/251.54999999999998 [00:29<01:44, 1.90seconds/s]'
+    into '21% — about 1m 44s remaining'
+    """
+    m = re.match(
+        r"(\d+)%\|[^|]*\|\s*[\d.]+/[\d.]+\s*\[[^<]*<([^,\]]+)",
+        line,
+    )
+    if not m:
+        return line
+
+    pct = int(m.group(1))
+    eta_raw = m.group(2)  # e.g. "01:44"
+    eta = _format_eta(eta_raw)
+
+    if pct >= 100:
+        return "100% — wrapping up..."
+    return f"{pct}% — about {eta} remaining"
+
+
 # ---- SSE Progress Events ----
 # Per-job event channels for SSE streaming
 _progress_events: dict[str, list] = {}  # job_id -> list of subscriber queues
@@ -208,11 +251,12 @@ def _run_split(job_id: str, model: str):
             if not line:
                 continue
             # Parse demucs progress (typically shows percentage)
-            progress_text = line
             if "%" in line:
-                progress_text = line
+                progress_text = format_progress(line)
             elif "Separated" in line or "separated" in line:
                 progress_text = "Finalizing..."
+            else:
+                progress_text = line
 
             db_update_progress(job_id, progress_text)
             publish_progress(job_id, {"status": "processing", "progress": progress_text})

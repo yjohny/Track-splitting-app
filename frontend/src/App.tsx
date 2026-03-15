@@ -257,6 +257,7 @@ const ChannelStrip = React.memo(function ChannelStrip({
             value={muted ? 0 : volume}
             onChange={(e) => onVolumeChange(track.name, parseFloat(e.target.value))}
             onDragStart={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
             style={{ "--track-color": color } as React.CSSProperties}
             aria-label={`${track.name} volume`}
@@ -354,7 +355,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
 
     // Master gain node to prevent clipping when multiple tracks are summed
     const masterGain = ctx.createGain();
-    masterGain.gain.value = 1 / Math.max(1, initialTracks.length);
+    masterGain.gain.value = 1 / Math.max(1, Math.sqrt(initialTracks.length));
     masterGain.connect(ctx.destination);
     masterGainRef.current = masterGain;
 
@@ -392,7 +393,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
       audio.crossOrigin = "anonymous";
       audio.preload = "auto";
 
-      audio.addEventListener("loadeddata", onTrackReady, { once: true });
+      audio.addEventListener("canplaythrough", onTrackReady, { once: true });
       audio.addEventListener("error", () => {
         console.error(`Failed to load track: ${t.name}`, audio.error);
         onTrackReady();
@@ -434,7 +435,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     });
     // Scale master gain by number of audible tracks to prevent clipping
     if (masterGainRef.current) {
-      masterGainRef.current.gain.value = 1 / Math.max(1, audibleCount);
+      masterGainRef.current.gain.value = 1 / Math.max(1, Math.sqrt(audibleCount));
     }
   }, [volumes, mutes, solos, anySolo, initialTracks]);
 
@@ -560,7 +561,10 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
       els.forEach((a) => { a.currentTime = syncTime; });
     }
     // Collect all play promises and fire them as close together as possible
-    els.forEach((a) => a.play());
+    await Promise.all(els.map((a) => a.play().catch((err) => {
+      console.warn("Track play() failed, retrying:", err);
+      return a.play().catch(() => {});
+    })));
     setPlaying(true);
   };
 
@@ -578,16 +582,22 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     setCurrentTime(0);
   };
 
-  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+  const seek = async (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const time = ratio * duration;
     const els = Object.values(audioElementsRef.current);
     // Pause all before seeking to avoid desync from mid-playback seeks
     const wasPlaying = playing;
-    if (wasPlaying) els.forEach((a) => a.pause());
-    els.forEach((a) => { a.currentTime = time; });
-    if (wasPlaying) els.forEach((a) => a.play());
+    els.forEach((a) => a.pause());
+    // Wait for all tracks to finish seeking before resuming playback
+    await Promise.all(els.map((a) => new Promise<void>((resolve) => {
+      a.addEventListener("seeked", () => resolve(), { once: true });
+      a.currentTime = time;
+    })));
+    if (wasPlaying) {
+      await Promise.all(els.map((a) => a.play().catch(() => {})));
+    }
     setCurrentTime(time);
   };
 
