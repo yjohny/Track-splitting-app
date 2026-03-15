@@ -229,6 +229,10 @@ const ChannelStrip = React.memo(function ChannelStrip({
   jobId, exportFormat, index,
   onDragStart, onDragOver, onDragEnd, isDragTarget,
 }: ChannelStripProps) {
+  // Safari sets e.target to the draggable element itself in dragstart,
+  // so we can't use closest() to detect the child. Track it via pointer events instead.
+  const pointerOnInteractive = useRef(false);
+
   const icon = TRACK_ICONS[track.name.toLowerCase()] || "\u{1F3B5}";
   const color = TRACK_COLORS[track.name.toLowerCase()] || "#888";
   const isAudible = !muted && (!anySolo || solo);
@@ -240,10 +244,12 @@ const ChannelStrip = React.memo(function ChannelStrip({
     <div
       className={`channel-strip ${!isAudible ? "silenced" : ""} ${isDragTarget ? "drag-target" : ""}`}
       draggable
-      onDragStart={(e) => {
-        // Prevent drag when gesture starts on interactive elements (sliders, buttons)
+      onPointerDown={(e) => {
         const target = e.target as HTMLElement;
-        if (target.closest(".channel-slider-wrap") || target.closest(".channel-buttons")) {
+        pointerOnInteractive.current = !!(target.closest(".channel-slider-wrap") || target.closest(".channel-buttons"));
+      }}
+      onDragStart={(e) => {
+        if (pointerOnInteractive.current) {
           e.preventDefault();
           return;
         }
@@ -271,10 +277,6 @@ const ChannelStrip = React.memo(function ChannelStrip({
             step="0.01"
             value={muted ? 0 : volume}
             onChange={(e) => onVolumeChange(track.name, parseFloat(e.target.value))}
-            draggable={false}
-            onDragStart={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
             style={{ "--track-color": color } as React.CSSProperties}
             aria-label={`${track.name} volume`}
           />
@@ -323,11 +325,7 @@ interface MixerProps {
 }
 
 function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const gainNodesRef = useRef<Record<string, GainNode>>({});
-  const masterGainRef = useRef<GainNode | null>(null);
   const audioElementsRef = useRef<Record<string, HTMLAudioElement>>({});
-  const sourceNodesRef = useRef<Record<string, MediaElementAudioSourceNode>>({});
 
   const [trackOrder, setTrackOrder] = useState<Track[]>(initialTracks);
   const [volumes, setVolumes] = useState<Record<string, number>>({});
@@ -364,20 +362,9 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     setTrackOrder(initialTracks);
   }, [initialTracks]);
 
-  // Initialize Web Audio API
+  // Load audio elements (no Web Audio API — use native volume for Safari compat)
   useEffect(() => {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    audioCtxRef.current = ctx;
-
-    // Master gain node to prevent clipping when multiple tracks are summed
-    const masterGain = ctx.createGain();
-    masterGain.gain.value = 1 / Math.max(1, Math.sqrt(initialTracks.length));
-    masterGain.connect(ctx.destination);
-    masterGainRef.current = masterGain;
-
     const elements: Record<string, HTMLAudioElement> = {};
-    const sources: Record<string, MediaElementAudioSourceNode> = {};
-    const gains: Record<string, GainNode> = {};
     let loadedCount = 0;
     let hasFinalized = false;
 
@@ -409,58 +396,44 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
       audio.preload = "auto";
       audio.src = `${API}/api/tracks/${jobId}/${t.filename}`;
 
-      const gain = ctx.createGain();
-      gain.connect(masterGain);
-
-      audio.addEventListener("canplaythrough", () => {
-        // Defer createMediaElementSource until the element has data —
-        // connecting too early can leave the source node in a silent state.
-        if (!sources[t.name]) {
-          const source = ctx.createMediaElementSource(audio);
-          source.connect(gain);
-          sources[t.name] = source;
-        }
-        onTrackReady();
-      }, { once: true });
+      audio.addEventListener("canplaythrough", onTrackReady, { once: true });
       audio.addEventListener("error", () => {
         console.error(`Failed to load track: ${t.name}`, audio.error);
         onTrackReady();
       }, { once: true });
 
       audio.load();
-
       elements[t.name] = audio;
-      gains[t.name] = gain;
     });
 
     audioElementsRef.current = elements;
-    sourceNodesRef.current = sources;
-    gainNodesRef.current = gains;
 
     return () => {
       clearTimeout(timeout);
       Object.values(elements).forEach((a) => { a.pause(); a.src = ""; });
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      ctx.close();
     };
   }, [initialTracks, jobId]);
 
-  // Sync gain values
+  // Sync volume via native HTMLAudioElement.volume (Safari-compatible)
   useEffect(() => {
     let audibleCount = 0;
     initialTracks.forEach((t) => {
-      const gain = gainNodesRef.current[t.name];
-      if (!gain) return;
       const isMuted = mutes[t.name];
       const isSolo = solos[t.name];
       const audible = !isMuted && (!anySolo || isSolo);
-      gain.gain.value = audible ? (volumes[t.name] ?? 1) : 0;
       if (audible && (volumes[t.name] ?? 1) > 0) audibleCount++;
     });
-    // Scale master gain by number of audible tracks to prevent clipping
-    if (masterGainRef.current) {
-      masterGainRef.current.gain.value = 1 / Math.max(1, Math.sqrt(audibleCount));
-    }
+    const masterScale = 1 / Math.max(1, Math.sqrt(audibleCount));
+
+    initialTracks.forEach((t) => {
+      const audio = audioElementsRef.current[t.name];
+      if (!audio) return;
+      const isMuted = mutes[t.name];
+      const isSolo = solos[t.name];
+      const audible = !isMuted && (!anySolo || isSolo);
+      audio.volume = audible ? (volumes[t.name] ?? 1) * masterScale : 0;
+    });
   }, [volumes, mutes, solos, anySolo, initialTracks]);
 
   // Animation frame for time
@@ -575,9 +548,6 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
   });
 
   const playAll = async () => {
-    if (audioCtxRef.current?.state === "suspended") {
-      await audioCtxRef.current.resume();
-    }
     // Sync all tracks to the same currentTime before playing to avoid drift
     const els = Object.values(audioElementsRef.current);
     if (els.length > 0) {
