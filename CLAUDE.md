@@ -43,8 +43,16 @@ npm run build                    # production build → backend/static/
 
 ### Docker
 ```bash
-docker compose up --build        # full stack on :5000
+docker compose up --build        # CPU-only, works everywhere
+
+# With NVIDIA GPU:
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ```
+
+### GPU acceleration
+- **NVIDIA (Linux)**: Use the `docker-compose.gpu.yml` override above. Requires `nvidia-container-toolkit` on the host.
+- **Apple Silicon (M1/M2/M3)**: MPS acceleration is not available inside Docker (macOS doesn't pass GPU to containers). Run the backend natively (outside Docker) to use MPS — `get_device()` will auto-detect it.
+- Verify device at runtime: `curl localhost:5000/api/health` → check `"device"` field.
 
 ## Key conventions
 
@@ -55,7 +63,7 @@ docker compose up --build        # full stack on :5000
 - Audio elements should use `canplaythrough` (not `loadeddata`) before considering tracks ready for playback.
 - `play()` calls return promises that must be awaited/caught — never fire-and-forget.
 - Seeking must wait for `seeked` events on all tracks before resuming playback.
-- GPU acceleration: `get_device()` in `app.py` auto-detects the best available device. Torch is imported lazily inside this function to avoid requiring it at module load time (important for tests). The device is passed to Demucs via `-d`.
+- GPU acceleration: `get_device()` in `app.py` auto-detects the best available device. Torch is imported lazily inside this function to avoid requiring it at module load time (important for tests). The device is passed to Demucs via `-d`. The Dockerfile uses a `TORCH_VARIANT` build arg (default `cpu`); the GPU compose override sets it to `cu121`. MPS (Apple Silicon) only works when running natively outside Docker.
 - Do NOT drift-correct tracks by reassigning `currentTime` in the animation frame loop — each assignment forces a browser seek that causes audible choppy/jagged playback. Sync tracks only at play and seek time; minor drift between independent `HTMLAudioElement`s is inaudible.
 - DB schema migrations use `ALTER TABLE ... ADD COLUMN` wrapped in try/except for idempotency (SQLite lacks `IF NOT EXISTS` on ALTER TABLE).
 - Mixer auto-save skips the initial render (via a ref flag) to avoid overwriting restored settings with defaults.
