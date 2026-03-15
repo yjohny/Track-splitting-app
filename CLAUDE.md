@@ -48,3 +48,4 @@ docker compose up --build        # full stack on :5000
 - Audio elements should use `canplaythrough` (not `loadeddata`) before considering tracks ready for playback.
 - `play()` calls return promises that must be awaited/caught — never fire-and-forget.
 - Seeking must wait for `seeked` events on all tracks before resuming playback.
+- Do NOT drift-correct tracks by reassigning `currentTime` in the animation frame loop — each assignment forces a browser seek that causes audible choppy/jagged playback. Sync tracks only at play and seek time; minor drift between independent `HTMLAudioElement`s is inaudible.
