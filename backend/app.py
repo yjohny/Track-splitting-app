@@ -35,6 +35,20 @@ RATE_LIMIT_WINDOW = int(os.environ.get("RATE_LIMIT_WINDOW", "3600"))  # seconds
 
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
+
+def get_device():
+    """Auto-detect best available device for Demucs inference."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():
+            return "mps"
+    except ImportError:
+        pass
+    return "cpu"
+
+
 # ---- SQLite Job Store ----
 
 def get_db():
@@ -234,6 +248,7 @@ def _run_split(job_id: str, model: str):
             [
                 "python", "-u",
                 str(Path(__file__).resolve().parent / "demucs_wrapper.py"),
+                "-d", get_device(),
                 "--out", str(output_path),
                 "--name", model,
                 "-n", model,
