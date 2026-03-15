@@ -83,4 +83,39 @@ describe("App", () => {
     const uploadZone = screen.getByRole("button", { name: /Upload audio file/i });
     expect(uploadZone).toHaveAttribute("tabIndex", "0");
   });
+
+  test("renders navigation tabs", () => {
+    render(<App />);
+    expect(screen.getByRole("tab", { name: "Split" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Library" })).toBeInTheDocument();
+  });
+
+  test("switches to library view when Library tab is clicked", async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => [],
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("tab", { name: "Library" }));
+
+    expect(await screen.findByText("Your Library")).toBeInTheDocument();
+    expect(await screen.findByText("No saved splits yet.")).toBeInTheDocument();
+  });
+
+  test("library displays jobs from API", async () => {
+    const mockJobs = [
+      { id: "abc123", name: "My Song", filename: "song.mp3", status: "done", trackCount: 4, createdAt: Date.now() / 1000 },
+    ];
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockJobs,
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("tab", { name: "Library" }));
+
+    expect(await screen.findByText("My Song")).toBeInTheDocument();
+    expect(screen.getByText(/4 tracks/)).toBeInTheDocument();
+  });
 });

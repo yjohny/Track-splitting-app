@@ -19,3 +19,19 @@ export interface ProgressEvent {
   tracks?: Track[];
   error?: string;
 }
+
+export interface MixerSettings {
+  volumes: Record<string, number>;
+  mutes: Record<string, boolean>;
+  solos: Record<string, boolean>;
+  trackOrder: string[];
+}
+
+export interface LibraryJob {
+  id: string;
+  name: string | null;
+  filename: string;
+  status: string;
+  trackCount: number;
+  createdAt: number;
+}

@@ -792,6 +792,207 @@ body {
   min-width: 180px;
 }
 
+/* ---- Navigation Tabs ---- */
+.nav-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 0.25rem;
+  margin-top: 1rem;
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  display: inline-flex;
+}
+
+.header .nav-tabs {
+  display: inline-flex;
+}
+
+.nav-tab {
+  padding: 0.4rem 1.25rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.nav-tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.nav-tab.active {
+  background: var(--primary);
+  color: white;
+}
+
+/* ---- Library ---- */
+.library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+.library-header h2 {
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+.library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.library-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.library-item:hover {
+  border-color: var(--primary);
+  background: var(--surface-hover);
+}
+
+.library-item:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.library-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.library-item-name {
+  font-weight: 500;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.library-item-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.library-item-delete {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.library-item-delete:hover {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.library-empty {
+  text-align: center;
+  padding: 3rem 2rem;
+  color: var(--text-muted);
+}
+
+.library-empty p:first-child {
+  font-size: 1.05rem;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 0.5rem;
+}
+
+.library-empty-hint {
+  font-size: 0.85rem;
+}
+
+/* ---- Delete Confirmation ---- */
+.confirm-dialog {
+  position: absolute;
+  right: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+}
+
+.confirm-dialog p {
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+  white-space: nowrap;
+}
+
+.confirm-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.confirm-delete-btn {
+  background: var(--error);
+  color: white;
+  border: none;
+}
+
+.confirm-delete-btn:hover {
+  opacity: 0.9;
+}
+
+/* ---- Editable Name ---- */
+.editable-name {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.editable-name:hover .edit-icon {
+  opacity: 1;
+}
+
+.edit-icon {
+  opacity: 0;
+  transition: opacity 0.15s;
+  color: var(--text-muted);
+}
+
+.editable-name-input {
+  font-size: 0.9rem;
+  font-family: inherit;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  width: 100%;
+  max-width: 400px;
+}
+
+/* ---- Results Header Actions ---- */
+.results-header-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 640px) {
   .model-select {
