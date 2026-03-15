@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import "./App.css";
-import { Track, Model, AppStatus, ExportFormat, Theme, ProgressEvent } from "./types";
+import { Track, Model, AppStatus, ExportFormat, Theme, ProgressEvent, MixerSettings, LibraryJob } from "./types";
 
 const API = process.env.REACT_APP_API_URL || "";
 
@@ -322,9 +322,12 @@ interface MixerProps {
   tracks: Track[];
   jobId: string;
   fileName: string;
+  initialSettings?: MixerSettings | null;
+  onNameChange?: (name: string) => void;
+  jobName?: string | null;
 }
 
-function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
+function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onNameChange, jobName }: MixerProps) {
   const audioElementsRef = useRef<Record<string, HTMLAudioElement>>({});
 
   const [trackOrder, setTrackOrder] = useState<Track[]>(initialTracks);
@@ -342,25 +345,41 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
   const [dragTarget, setDragTarget] = useState<number | null>(null);
   const [mixError, setMixError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<Record<string, boolean>>({});
+  const [editingName, setEditingName] = useState(false);
+  const [editName, setEditName] = useState(jobName || "");
   const animFrameRef = useRef<number | null>(null);
 
   const anySolo = Object.values(solos).some(Boolean);
 
-  // Initialize volumes
+  // Initialize volumes (restore from saved settings if available)
   useEffect(() => {
     const v: Record<string, number> = {};
     const m: Record<string, boolean> = {};
     const s: Record<string, boolean> = {};
     initialTracks.forEach((t) => {
-      v[t.name] = 1;
-      m[t.name] = false;
-      s[t.name] = false;
+      v[t.name] = initialSettings?.volumes?.[t.name] ?? 1;
+      m[t.name] = initialSettings?.mutes?.[t.name] ?? false;
+      s[t.name] = initialSettings?.solos?.[t.name] ?? false;
     });
     setVolumes(v);
     setMutes(m);
     setSolos(s);
-    setTrackOrder(initialTracks);
-  }, [initialTracks]);
+    // Restore track order if saved
+    if (initialSettings?.trackOrder?.length) {
+      const ordered: Track[] = [];
+      for (const name of initialSettings.trackOrder) {
+        const found = initialTracks.find((t) => t.name === name);
+        if (found) ordered.push(found);
+      }
+      // Add any tracks not in saved order (e.g. new tracks)
+      for (const t of initialTracks) {
+        if (!ordered.find((o) => o.name === t.name)) ordered.push(t);
+      }
+      setTrackOrder(ordered);
+    } else {
+      setTrackOrder(initialTracks);
+    }
+  }, [initialTracks, initialSettings]);
 
   // Load audio elements (no Web Audio API — use native volume for Safari compat)
   useEffect(() => {
@@ -463,6 +482,30 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     first.addEventListener("ended", onEnded);
     return () => first.removeEventListener("ended", onEnded);
   }, [loaded]);
+
+  // Auto-save mixer settings (debounced)
+  const settingsInitialized = useRef(false);
+  useEffect(() => {
+    // Skip the initial render to avoid saving defaults over saved settings
+    if (!settingsInitialized.current) {
+      settingsInitialized.current = true;
+      return;
+    }
+    const timer = setTimeout(() => {
+      const settings = {
+        volumes,
+        mutes,
+        solos,
+        trackOrder: trackOrder.map((t) => t.name),
+      };
+      fetch(`${API}/api/jobs/${jobId}/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+      }).catch(() => {});
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [volumes, mutes, solos, trackOrder, jobId]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -850,6 +893,161 @@ function ProgressDisplay({ progress, status }: ProgressDisplayProps) {
   );
 }
 
+/* ---- Editable Name ---- */
+interface EditableNameProps {
+  name: string;
+  onSave: (name: string) => void;
+}
+
+function EditableName({ name, onSave }: EditableNameProps) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) inputRef.current.focus();
+  }, [editing]);
+
+  const save = () => {
+    setEditing(false);
+    if (value.trim() && value.trim() !== name) {
+      onSave(value.trim());
+    } else {
+      setValue(name);
+    }
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        className="editable-name-input"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") { setValue(name); setEditing(false); } }}
+        maxLength={200}
+      />
+    );
+  }
+
+  return (
+    <p className="results-filename editable-name" onClick={() => { setValue(name); setEditing(true); }} title="Click to rename">
+      {name}
+      <svg className="edit-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+      </svg>
+    </p>
+  );
+}
+
+/* ---- Library Component ---- */
+interface LibraryProps {
+  onSelectJob: (job: LibraryJob) => void;
+  onNewSplit: () => void;
+}
+
+function Library({ onSelectJob, onNewSplit }: LibraryProps) {
+  const [jobs, setJobs] = useState<LibraryJob[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+
+  const fetchJobs = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/jobs`);
+      if (res.ok) {
+        setJobs(await res.json());
+      }
+    } catch {
+      // silently fail
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchJobs(); }, [fetchJobs]);
+
+  const handleDelete = async (id: string) => {
+    try {
+      await fetch(`${API}/api/jobs/${id}`, { method: "DELETE" });
+      setJobs((prev) => prev.filter((j) => j.id !== id));
+    } catch {
+      // silently fail
+    }
+    setDeleteConfirm(null);
+  };
+
+  const formatDate = (ts: number) => {
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+      + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  };
+
+  return (
+    <div className="library">
+      <div className="library-header">
+        <h2>Your Library</h2>
+        <button className="btn btn-primary btn-sm" onClick={onNewSplit}>
+          New Split
+        </button>
+      </div>
+
+      {loading && (
+        <div className="mixer-loading">
+          <div className="spinner" />
+          <span>Loading library...</span>
+        </div>
+      )}
+
+      {!loading && jobs.length === 0 && (
+        <div className="library-empty">
+          <p>No saved splits yet.</p>
+          <p className="library-empty-hint">Upload a song and split it to see it here.</p>
+        </div>
+      )}
+
+      {!loading && jobs.length > 0 && (
+        <div className="library-list">
+          {jobs.map((job) => (
+            <div key={job.id} className="library-item" onClick={() => onSelectJob(job)} role="button" tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter") onSelectJob(job); }}>
+              <div className="library-item-info">
+                <span className="library-item-name">{job.name || job.filename}</span>
+                <span className="library-item-meta">
+                  {job.trackCount} tracks &bull; {formatDate(job.createdAt)}
+                </span>
+              </div>
+              <button
+                className="ch-btn library-item-delete"
+                onClick={(e) => { e.stopPropagation(); setDeleteConfirm(job.id); }}
+                title="Delete"
+                aria-label={`Delete ${job.name || job.filename}`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                  <path d="M10 11v6" /><path d="M14 11v6" />
+                  <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                </svg>
+              </button>
+
+              {deleteConfirm === job.id && (
+                <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
+                  <p>Delete this split?</p>
+                  <div className="confirm-buttons">
+                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setDeleteConfirm(null); }}>Cancel</button>
+                    <button className="btn btn-sm confirm-delete-btn" onClick={(e) => { e.stopPropagation(); handleDelete(job.id); }}>Delete</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---- Main App ---- */
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
@@ -860,6 +1058,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
   const [theme, toggleTheme] = useTheme();
+  const [view, setView] = useState<"split" | "library">("split");
+  const [displayName, setDisplayName] = useState<string>("");
+  const [mixerSettings, setMixerSettings] = useState<MixerSettings | null>(null);
+  const [jobName, setJobName] = useState<string | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -874,11 +1076,46 @@ export default function App() {
     setTracks([]);
     setError(null);
     setProgress("");
+    setMixerSettings(null);
+    setJobName(null);
+    setDisplayName("");
   };
 
   const handleFileSelected = (f: File) => {
     setFile(f);
     setError(null);
+  };
+
+  const loadFromLibrary = async (job: LibraryJob) => {
+    try {
+      const res = await fetch(`${API}/api/status/${job.id}`);
+      if (!res.ok) throw new Error("Failed to load job");
+      const data = await res.json();
+      setJobId(data.id);
+      setTracks(data.tracks || []);
+      setStatus("done");
+      setDisplayName(data.name || data.filename);
+      setJobName(data.name || null);
+      setMixerSettings(data.mixer_settings || null);
+      setView("split");
+    } catch {
+      setError("Failed to load saved split");
+    }
+  };
+
+  const handleRename = async (name: string) => {
+    if (!jobId || !name.trim()) return;
+    try {
+      await fetch(`${API}/api/jobs/${jobId}/name`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      setJobName(name.trim());
+      setDisplayName(name.trim());
+    } catch {
+      // silently fail
+    }
   };
 
   const startSSE = useCallback((id: string) => {
@@ -998,10 +1235,10 @@ export default function App() {
     };
   }, []);
 
-  // Warn before navigating away during processing or with results
+  // Warn before navigating away during processing
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (status === "uploading" || status === "processing" || status === "queued" || status === "done") {
+      if (status === "uploading" || status === "processing" || status === "queued") {
         e.preventDefault();
       }
     };
@@ -1038,22 +1275,58 @@ export default function App() {
         <p className="subtitle">
           Upload a song and split it into individual instrument tracks using AI
         </p>
+        <nav className="nav-tabs" role="tablist">
+          <button
+            className={`nav-tab ${view === "split" ? "active" : ""}`}
+            onClick={() => setView("split")}
+            role="tab"
+            aria-selected={view === "split"}
+          >
+            Split
+          </button>
+          <button
+            className={`nav-tab ${view === "library" ? "active" : ""}`}
+            onClick={() => setView("library")}
+            role="tab"
+            aria-selected={view === "library"}
+          >
+            Library
+          </button>
+        </nav>
       </header>
 
       <main className="main">
-        {status === "done" ? (
+        {view === "library" ? (
+          <Library onSelectJob={loadFromLibrary} onNewSplit={() => { reset(); setView("split"); }} />
+        ) : status === "done" ? (
           <div className="results">
             <div className="results-header">
               <div>
                 <h2>Separated Tracks</h2>
-                <p className="results-filename">{file?.name}</p>
+                <EditableName
+                  name={displayName || file?.name || "track"}
+                  onSave={handleRename}
+                />
               </div>
-              <button className="btn btn-secondary btn-sm" onClick={reset}>
-                Split Another Song
-              </button>
+              <div className="results-header-actions">
+                <button className="btn btn-secondary btn-sm" onClick={() => setView("library")}>
+                  Library
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={reset}>
+                  Split Another Song
+                </button>
+              </div>
             </div>
 
-            <Mixer tracks={tracks} jobId={jobId!} fileName={file?.name || "track"} />
+            <Mixer
+              key={jobId}
+              tracks={tracks}
+              jobId={jobId!}
+              fileName={displayName || file?.name || "track"}
+              initialSettings={mixerSettings}
+              onNameChange={handleRename}
+              jobName={jobName}
+            />
           </div>
         ) : (
           <div className="upload-section">

@@ -29,7 +29,6 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"mp3", "wav", "flac", "ogg", "m4a", "wma", "aac", "webm"}
 MAX_CONTENT_LENGTH = 200 * 1024 * 1024  # 200 MB
-CLEANUP_MAX_AGE_HOURS = int(os.environ.get("CLEANUP_MAX_AGE_HOURS", "24"))
 RATE_LIMIT_MAX = int(os.environ.get("RATE_LIMIT_MAX", "10"))
 RATE_LIMIT_WINDOW = int(os.environ.get("RATE_LIMIT_WINDOW", "3600"))  # seconds
 
@@ -82,6 +81,12 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_limits_ip ON rate_limits(ip)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at)")
+    # Migration: add new columns if they don't exist
+    for col in ("name TEXT", "mixer_settings TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -89,17 +94,23 @@ def init_db():
 def db_save_job(job: dict):
     """Save or update a job in the database."""
     conn = get_db()
+    mixer_settings = job.get("mixer_settings")
+    if isinstance(mixer_settings, dict):
+        mixer_settings = json.dumps(mixer_settings)
     conn.execute("""
-        INSERT INTO jobs (id, filename, status, tracks, error, progress, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO jobs (id, filename, status, tracks, error, progress, created_at, updated_at, name, mixer_settings)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             status=excluded.status, tracks=excluded.tracks,
             error=excluded.error, progress=excluded.progress,
-            updated_at=excluded.updated_at
+            updated_at=excluded.updated_at,
+            name=COALESCE(excluded.name, jobs.name),
+            mixer_settings=COALESCE(excluded.mixer_settings, jobs.mixer_settings)
     """, (
         job["id"], job["filename"], job["status"],
         json.dumps(job.get("tracks", [])), job.get("error"),
-        job.get("progress", ""), job.get("created_at", time.time()), time.time()
+        job.get("progress", ""), job.get("created_at", time.time()), time.time(),
+        job.get("name"), mixer_settings,
     ))
     conn.commit()
     conn.close()
@@ -112,6 +123,12 @@ def db_get_job(job_id: str) -> dict | None:
     conn.close()
     if not row:
         return None
+    mixer_settings = row["mixer_settings"]
+    if mixer_settings:
+        try:
+            mixer_settings = json.loads(mixer_settings)
+        except (json.JSONDecodeError, TypeError):
+            mixer_settings = None
     return {
         "id": row["id"],
         "filename": row["filename"],
@@ -121,6 +138,8 @@ def db_get_job(job_id: str) -> dict | None:
         "progress": row["progress"] or "",
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "name": row["name"],
+        "mixer_settings": mixer_settings,
     }
 
 
@@ -323,40 +342,12 @@ def _run_split(job_id: str, model: str):
         publish_progress(job_id, {"status": "error", "error": str(e)})
 
 
-# ---- File Cleanup ----
-def cleanup_old_files():
-    """Periodically remove files older than CLEANUP_MAX_AGE_HOURS."""
+# ---- Orphaned Job Recovery ----
+def cleanup_orphaned_jobs():
+    """Periodically recover orphaned jobs stuck in uploading/queued."""
     while True:
         time.sleep(3600)  # Check every hour
         try:
-            cutoff = time.time() - (CLEANUP_MAX_AGE_HOURS * 3600)
-
-            conn = get_db()
-            old_jobs = conn.execute(
-                "SELECT id FROM jobs WHERE created_at < ? AND status != 'processing'",
-                (cutoff,)
-            ).fetchall()
-            conn.close()
-
-            for row in old_jobs:
-                job_id = row["id"]
-                upload_dir = UPLOAD_DIR / job_id
-                output_dir = OUTPUT_DIR / job_id
-                zip_path = OUTPUT_DIR / f"{job_id}.zip"
-
-                if upload_dir.exists():
-                    shutil.rmtree(upload_dir)
-                if output_dir.exists():
-                    shutil.rmtree(output_dir)
-                if zip_path.exists():
-                    zip_path.unlink()
-
-                conn = get_db()
-                conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-                conn.commit()
-                conn.close()
-
-            # Recover orphaned jobs stuck in uploading/queued for more than 1 hour
             orphan_cutoff = time.time() - 3600
             conn = get_db()
             conn.execute(
@@ -366,7 +357,6 @@ def cleanup_old_files():
             )
             conn.commit()
             conn.close()
-
         except Exception as e:
             print(f"Cleanup error: {e}")
 
@@ -481,6 +471,8 @@ def get_job(job_id: str) -> dict | None:
         "error": None,
         "progress": "",
         "created_at": time.time(),
+        "name": None,
+        "mixer_settings": None,
     }
     db_save_job(job)
     return job
@@ -818,6 +810,117 @@ def download_mix(job_id: str):
         return jsonify({"error": f"Mix failed: {str(e)}"}), 500
 
 
+@app.route("/api/jobs", methods=["GET"])
+def list_jobs():
+    """List all completed jobs for the library view."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, name, filename, status, tracks, created_at FROM jobs "
+        "WHERE status = 'done' ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    jobs = []
+    for row in rows:
+        tracks = json.loads(row["tracks"])
+        jobs.append({
+            "id": row["id"],
+            "name": row["name"],
+            "filename": row["filename"],
+            "status": row["status"],
+            "trackCount": len(tracks),
+            "createdAt": row["created_at"],
+        })
+    return jsonify(jobs)
+
+
+@app.route("/api/jobs/<job_id>/name", methods=["PUT"])
+def rename_job(job_id: str):
+    """Update the custom name for a job."""
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    if not request.is_json or "name" not in request.json:
+        return jsonify({"error": "Missing 'name' field"}), 400
+
+    name = request.json["name"]
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({"error": "Name must be a non-empty string"}), 400
+    if len(name) > 200:
+        return jsonify({"error": "Name must be 200 characters or less"}), 400
+
+    conn = get_db()
+    conn.execute("UPDATE jobs SET name = ?, updated_at = ? WHERE id = ?",
+                 (name.strip(), time.time(), job_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"id": job_id, "name": name.strip()})
+
+
+@app.route("/api/jobs/<job_id>/settings", methods=["PUT"])
+def save_settings(job_id: str):
+    """Save mixer settings for a job."""
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+
+    data = request.json
+    settings = {}
+    if "volumes" in data:
+        if not isinstance(data["volumes"], dict):
+            return jsonify({"error": "volumes must be an object"}), 400
+        settings["volumes"] = data["volumes"]
+    if "mutes" in data:
+        if not isinstance(data["mutes"], dict):
+            return jsonify({"error": "mutes must be an object"}), 400
+        settings["mutes"] = data["mutes"]
+    if "solos" in data:
+        if not isinstance(data["solos"], dict):
+            return jsonify({"error": "solos must be an object"}), 400
+        settings["solos"] = data["solos"]
+    if "trackOrder" in data:
+        if not isinstance(data["trackOrder"], list):
+            return jsonify({"error": "trackOrder must be an array"}), 400
+        settings["trackOrder"] = data["trackOrder"]
+
+    conn = get_db()
+    conn.execute("UPDATE jobs SET mixer_settings = ?, updated_at = ? WHERE id = ?",
+                 (json.dumps(settings), time.time(), job_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/jobs/<job_id>", methods=["DELETE"])
+def delete_job(job_id: str):
+    """Delete a job and all its files."""
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    if job["status"] in ("processing", "queued"):
+        return jsonify({"error": "Cannot delete a job that is currently processing"}), 409
+
+    upload_dir = UPLOAD_DIR / job_id
+    output_dir = OUTPUT_DIR / job_id
+    if upload_dir.exists():
+        shutil.rmtree(upload_dir)
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    # Clean up any zip files
+    for zip_file in OUTPUT_DIR.glob(f"{job_id}*.zip"):
+        zip_file.unlink()
+
+    conn = get_db()
+    conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"deleted": True})
+
+
 @app.route("/")
 def index():
     if (STATIC_DIR / "index.html").is_file():
@@ -843,8 +946,8 @@ init_db()
 _worker_thread = threading.Thread(target=process_worker, daemon=True)
 _worker_thread.start()
 
-# Start the cleanup thread
-_cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
+# Start the orphaned job recovery thread
+_cleanup_thread = threading.Thread(target=cleanup_orphaned_jobs, daemon=True)
 _cleanup_thread.start()
 
 

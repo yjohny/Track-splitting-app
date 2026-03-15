@@ -376,6 +376,160 @@ class TestRateLimit:
             app_module.RATE_LIMIT_MAX = old_limit
 
 
+class TestListJobs:
+    def _create_done_job(self, client, filename="test.mp3"):
+        """Upload a file and manually mark as done with tracks."""
+        import backend.app as app_module
+        data = {"file": make_audio_file(filename)}
+        resp = client.post("/api/upload", data=data, content_type="multipart/form-data")
+        job_id = resp.get_json()["jobId"]
+        conn = app_module.get_db()
+        conn.execute(
+            "UPDATE jobs SET status = 'done', tracks = ? WHERE id = ?",
+            (json.dumps([{"name": "vocals", "filename": "vocals.wav"}, {"name": "drums", "filename": "drums.wav"}]), job_id)
+        )
+        conn.commit()
+        conn.close()
+        return job_id
+
+    def test_list_empty(self, client):
+        resp = client.get("/api/jobs")
+        assert resp.status_code == 200
+        assert resp.get_json() == []
+
+    def test_list_returns_done_jobs(self, client):
+        job_id = self._create_done_job(client)
+        resp = client.get("/api/jobs")
+        assert resp.status_code == 200
+        jobs = resp.get_json()
+        assert len(jobs) == 1
+        assert jobs[0]["id"] == job_id
+        assert jobs[0]["trackCount"] == 2
+        assert jobs[0]["filename"] == "test.mp3"
+
+    def test_list_excludes_non_done(self, client):
+        # Upload but don't process — status is 'uploaded'
+        data = {"file": make_audio_file("test.mp3")}
+        client.post("/api/upload", data=data, content_type="multipart/form-data")
+        resp = client.get("/api/jobs")
+        assert resp.status_code == 200
+        assert len(resp.get_json()) == 0
+
+
+class TestRenameJob:
+    def _upload(self, client):
+        data = {"file": make_audio_file("test.mp3")}
+        resp = client.post("/api/upload", data=data, content_type="multipart/form-data")
+        return resp.get_json()["jobId"]
+
+    def test_rename_success(self, client):
+        job_id = self._upload(client)
+        resp = client.put(
+            f"/api/jobs/{job_id}/name",
+            data=json.dumps({"name": "My Song"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["name"] == "My Song"
+
+        # Verify via status
+        resp = client.get(f"/api/status/{job_id}")
+        assert resp.get_json()["name"] == "My Song"
+
+    def test_rename_empty_name(self, client):
+        job_id = self._upload(client)
+        resp = client.put(
+            f"/api/jobs/{job_id}/name",
+            data=json.dumps({"name": "  "}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+
+    def test_rename_missing_job(self, client):
+        resp = client.put(
+            "/api/jobs/nonexistent/name",
+            data=json.dumps({"name": "test"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 404
+
+
+class TestSaveSettings:
+    def _upload(self, client):
+        data = {"file": make_audio_file("test.mp3")}
+        resp = client.post("/api/upload", data=data, content_type="multipart/form-data")
+        return resp.get_json()["jobId"]
+
+    def test_save_and_load_settings(self, client):
+        job_id = self._upload(client)
+        settings = {
+            "volumes": {"vocals": 0.8, "drums": 1.0},
+            "mutes": {"vocals": False, "drums": True},
+            "solos": {"vocals": True, "drums": False},
+            "trackOrder": ["drums", "vocals"],
+        }
+        resp = client.put(
+            f"/api/jobs/{job_id}/settings",
+            data=json.dumps(settings),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+
+        # Verify via status
+        resp = client.get(f"/api/status/{job_id}")
+        data = resp.get_json()
+        assert data["mixer_settings"]["volumes"]["vocals"] == 0.8
+        assert data["mixer_settings"]["trackOrder"] == ["drums", "vocals"]
+
+    def test_save_settings_invalid_type(self, client):
+        job_id = self._upload(client)
+        resp = client.put(
+            f"/api/jobs/{job_id}/settings",
+            data=json.dumps({"volumes": "not-a-dict"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+
+    def test_save_settings_missing_job(self, client):
+        resp = client.put(
+            "/api/jobs/nonexistent/settings",
+            data=json.dumps({"volumes": {}}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 404
+
+
+class TestDeleteJob:
+    def _upload(self, client):
+        data = {"file": make_audio_file("test.mp3")}
+        resp = client.post("/api/upload", data=data, content_type="multipart/form-data")
+        return resp.get_json()["jobId"]
+
+    def test_delete_success(self, client):
+        job_id = self._upload(client)
+        resp = client.delete(f"/api/jobs/{job_id}")
+        assert resp.status_code == 200
+        assert resp.get_json()["deleted"] is True
+
+        # Verify job is gone
+        resp = client.get(f"/api/status/{job_id}")
+        assert resp.status_code == 404
+
+    def test_delete_missing_job(self, client):
+        resp = client.delete("/api/jobs/nonexistent")
+        assert resp.status_code == 404
+
+    def test_delete_processing_job(self, client):
+        import backend.app as app_module
+        job_id = self._upload(client)
+        conn = app_module.get_db()
+        conn.execute("UPDATE jobs SET status = 'processing' WHERE id = ?", (job_id,))
+        conn.commit()
+        conn.close()
+        resp = client.delete(f"/api/jobs/{job_id}")
+        assert resp.status_code == 409
+
+
 class TestSPAFallback:
     def test_api_404(self, client):
         resp = client.get("/api/nonexistent")
