@@ -256,6 +256,7 @@ const ChannelStrip = React.memo(function ChannelStrip({
             step="0.01"
             value={muted ? 0 : volume}
             onChange={(e) => onVolumeChange(track.name, parseFloat(e.target.value))}
+            draggable={false}
             onDragStart={(e) => e.stopPropagation()}
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
@@ -389,9 +390,10 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     }, 30000);
 
     initialTracks.forEach((t) => {
-      const audio = new Audio(`${API}/api/tracks/${jobId}/${t.filename}`);
+      const audio = new Audio();
       audio.crossOrigin = "anonymous";
       audio.preload = "auto";
+      audio.src = `${API}/api/tracks/${jobId}/${t.filename}`;
 
       audio.addEventListener("canplaythrough", onTrackReady, { once: true });
       audio.addEventListener("error", () => {
