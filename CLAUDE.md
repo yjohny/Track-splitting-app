@@ -49,3 +49,4 @@ docker compose up --build        # full stack on :5000
 - `play()` calls return promises that must be awaited/caught — never fire-and-forget.
 - Seeking must wait for `seeked` events on all tracks before resuming playback.
 - GPU acceleration: `get_device()` in `app.py` auto-detects the best available device. Torch is imported lazily inside this function to avoid requiring it at module load time (important for tests). The device is passed to Demucs via `-d`.
+- Do NOT drift-correct tracks by reassigning `currentTime` in the animation frame loop — each assignment forces a browser seek that causes audible choppy/jagged playback. Sync tracks only at play and seek time; minor drift between independent `HTMLAudioElement`s is inaudible.
