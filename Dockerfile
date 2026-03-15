@@ -17,10 +17,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
+# Install CUDA-capable PyTorch (works on CPU too, just larger image)
 COPY backend/requirements.txt ./
 RUN pip install --progress-bar on \
     torch torchaudio \
-    --index-url https://download.pytorch.org/whl/cpu && \
+    --index-url https://download.pytorch.org/whl/cu121 && \
     pip install --progress-bar on soundfile -r requirements.txt
 
 # Pre-download htdemucs model so the container works fully offline

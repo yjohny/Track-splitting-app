@@ -14,10 +14,16 @@ services:
       - CLEANUP_MAX_AGE_HOURS=24
       - RATE_LIMIT_MAX=10
       - RATE_LIMIT_WINDOW=3600
+      - NVIDIA_VISIBLE_DEVICES=all
     deploy:
       resources:
         limits:
           memory: 8G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 volumes:
   uploads:
