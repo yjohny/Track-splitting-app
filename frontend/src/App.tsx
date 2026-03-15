@@ -436,21 +436,14 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
     });
   }, [volumes, mutes, solos, anySolo, initialTracks]);
 
-  // Animation frame for time
+  // Animation frame for time display only — no drift correction during playback.
+  // Setting currentTime on HTMLAudioElements causes audible micro-seeks/glitches.
+  // Tracks are synced at play and seek time; minor drift is inaudible.
   useEffect(() => {
-    const DRIFT_THRESHOLD = 0.05; // 50ms — correct if any track drifts more than this
     const tick = () => {
-      const els = Object.values(audioElementsRef.current);
-      const first = els[0];
+      const first = Object.values(audioElementsRef.current)[0];
       if (first) {
-        const refTime = first.currentTime;
-        setCurrentTime(refTime);
-        // Drift correction: re-sync any track that has drifted from the reference
-        for (let i = 1; i < els.length; i++) {
-          if (Math.abs(els[i].currentTime - refTime) > DRIFT_THRESHOLD) {
-            els[i].currentTime = refTime;
-          }
-        }
+        setCurrentTime(first.currentTime);
       }
       animFrameRef.current = requestAnimationFrame(tick);
     };
