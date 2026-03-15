@@ -262,12 +262,15 @@ def _run_split(job_id: str, model: str):
 
     publish_progress(job_id, {"status": "processing", "progress": "Starting separation..."})
 
+    device = get_device()
+    print(f"[Job {job_id}] Using device: {device}")
+
     try:
         process = subprocess.Popen(
             [
                 "python", "-u",
                 str(Path(__file__).resolve().parent / "demucs_wrapper.py"),
-                "-d", get_device(),
+                "-d", device,
                 "--out", str(output_path),
                 "--name", model,
                 "-n", model,
@@ -489,7 +492,7 @@ EXPORT_FORMATS = {
 
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "queue_size": _job_queue.qsize()})
+    return jsonify({"status": "ok", "queue_size": _job_queue.qsize(), "device": get_device()})
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -941,6 +944,10 @@ def not_found(e):
 # ---- Startup ----
 
 init_db()
+
+# Log detected device at startup
+_startup_device = get_device()
+print(f"Track Splitter starting — inference device: {_startup_device}")
 
 # Start the processing worker thread
 _worker_thread = threading.Thread(target=process_worker, daemon=True)
