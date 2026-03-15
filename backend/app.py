@@ -119,37 +119,46 @@ def db_update_progress(job_id: str, progress: str):
     conn.close()
 
 
+def _format_eta(eta_str: str) -> str:
+    """Turn a tqdm ETA like '01:44' or '1:02:30' into a human-friendly string."""
+    parts = eta_str.strip().split(":")
+    try:
+        if len(parts) == 3:
+            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+        elif len(parts) == 2:
+            h, m, s = 0, int(parts[0]), int(parts[1])
+        else:
+            return eta_str
+    except ValueError:
+        return eta_str
+
+    if h > 0:
+        return f"{h}h {m}m" if m else f"{h}h"
+    if m > 0:
+        return f"{m}m {s}s" if s else f"{m}m"
+    return f"{s}s"
+
+
 def format_progress(line: str) -> str:
-    """Clean up raw tqdm/demucs progress output for display.
+    """Clean up raw tqdm/demucs progress output for user-friendly display.
 
     Turns e.g. '21%|████| 52.65/251.54999999999998 [00:29<01:44, 1.90seconds/s]'
-    into '21% | 52.7/251.5 seconds [00:29<01:44, 1.90 seconds/s]'
+    into '21% — about 1m 44s remaining'
     """
-    # Match tqdm-style: PERCENT%|bar| CURRENT/TOTAL [TIME<ETA, RATE unit/s]
     m = re.match(
-        r"(\d+)%\|[^|]*\|\s*([\d.]+)/([\d.]+)\s*\[([^,\]]+),\s*([\d.]+)([\w]*)/s\]",
+        r"(\d+)%\|[^|]*\|\s*[\d.]+/[\d.]+\s*\[[^<]*<([^,\]]+)",
         line,
     )
     if not m:
         return line
 
     pct = int(m.group(1))
-    current = float(m.group(2))
-    total = float(m.group(3))
-    time_info = m.group(4)  # e.g. "00:29<01:44"
-    rate = float(m.group(5))
-    unit = m.group(6) or "it"
+    eta_raw = m.group(2)  # e.g. "01:44"
+    eta = _format_eta(eta_raw)
 
-    # Add a space before the unit if missing (e.g. "seconds" -> " seconds")
-    if unit and not unit[0] == " ":
-        unit_display = f" {unit}"
-    else:
-        unit_display = unit
-
-    return (
-        f"{pct}% | {current:.1f}/{total:.1f} seconds "
-        f"[{time_info}, {rate:.2f}{unit_display}/s]"
-    )
+    if pct >= 100:
+        return "100% — wrapping up..."
+    return f"{pct}% — about {eta} remaining"
 
 
 # ---- SSE Progress Events ----
