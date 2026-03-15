@@ -639,12 +639,15 @@ def download_mix(job_id: str):
 
         inputs = []
         filter_parts = []
+        num_tracks = len(track_files)
         for i, (path, vol) in enumerate(track_files):
             inputs.extend(["-i", path])
-            filter_parts.append(f"[{i}]volume={vol}[v{i}]")
+            # Scale each track volume by 1/num_tracks to prevent clipping when summed
+            scaled_vol = vol / max(1, num_tracks)
+            filter_parts.append(f"[{i}]volume={scaled_vol}[v{i}]")
 
-        mix_inputs = "".join(f"[v{i}]" for i in range(len(track_files)))
-        filter_parts.append(f"{mix_inputs}amix=inputs={len(track_files)}:duration=longest:normalize=0[out]")
+        mix_inputs = "".join(f"[v{i}]" for i in range(num_tracks))
+        filter_parts.append(f"{mix_inputs}amix=inputs={num_tracks}:duration=longest:dropout_transition=0:normalize=0[out]")
 
         filter_graph = ";".join(filter_parts)
 
