@@ -122,13 +122,23 @@ interface WaveformProps {
   height?: number;
 }
 
+// Shared AudioContext for waveform decoding — avoids creating one per track,
+// which can exhaust the browser's AudioContext limit and break the Mixer's context.
+let _waveformCtx: AudioContext | null = null;
+function getWaveformContext(): AudioContext {
+  if (!_waveformCtx || _waveformCtx.state === "closed") {
+    _waveformCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  return _waveformCtx;
+}
+
 const Waveform = React.memo(function Waveform({ audioUrl, color, height = 40 }: WaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [waveformData, setWaveformData] = useState<number[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const ctx = getWaveformContext();
 
     fetch(audioUrl)
       .then((res) => res.arrayBuffer())
@@ -151,9 +161,6 @@ const Waveform = React.memo(function Waveform({ audioUrl, color, height = 40 }: 
       })
       .catch(() => {
         // Silently fail - waveform is optional
-      })
-      .finally(() => {
-        ctx.close();
       });
 
     return () => { cancelled = true; };
@@ -233,7 +240,15 @@ const ChannelStrip = React.memo(function ChannelStrip({
     <div
       className={`channel-strip ${!isAudible ? "silenced" : ""} ${isDragTarget ? "drag-target" : ""}`}
       draggable
-      onDragStart={() => onDragStart(index)}
+      onDragStart={(e) => {
+        // Prevent drag when gesture starts on interactive elements (sliders, buttons)
+        const target = e.target as HTMLElement;
+        if (target.closest(".channel-slider-wrap") || target.closest(".channel-buttons")) {
+          e.preventDefault();
+          return;
+        }
+        onDragStart(index);
+      }}
       onDragOver={(e) => { e.preventDefault(); onDragOver(index); }}
       onDragEnd={onDragEnd}
       role="listitem"
@@ -391,23 +406,30 @@ function Mixer({ tracks: initialTracks, jobId, fileName }: MixerProps) {
 
     initialTracks.forEach((t) => {
       const audio = new Audio();
-      audio.crossOrigin = "anonymous";
       audio.preload = "auto";
       audio.src = `${API}/api/tracks/${jobId}/${t.filename}`;
 
-      audio.addEventListener("canplaythrough", onTrackReady, { once: true });
+      const gain = ctx.createGain();
+      gain.connect(masterGain);
+
+      audio.addEventListener("canplaythrough", () => {
+        // Defer createMediaElementSource until the element has data —
+        // connecting too early can leave the source node in a silent state.
+        if (!sources[t.name]) {
+          const source = ctx.createMediaElementSource(audio);
+          source.connect(gain);
+          sources[t.name] = source;
+        }
+        onTrackReady();
+      }, { once: true });
       audio.addEventListener("error", () => {
         console.error(`Failed to load track: ${t.name}`, audio.error);
         onTrackReady();
       }, { once: true });
 
-      const source = ctx.createMediaElementSource(audio);
-      const gain = ctx.createGain();
-      source.connect(gain);
-      gain.connect(masterGain);
+      audio.load();
 
       elements[t.name] = audio;
-      sources[t.name] = source;
       gains[t.name] = gain;
     });
 
