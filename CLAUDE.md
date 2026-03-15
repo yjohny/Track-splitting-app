@@ -6,8 +6,8 @@ Track Splitter — a web app that splits audio files into individual instrument 
 
 ## Architecture
 
-- `backend/app.py` — Flask API: file upload, job queue, Demucs subprocess runner, SSE progress streaming, track serving
-- `backend/demucs_wrapper.py` — Demucs subprocess helper
+- `backend/app.py` — Flask API: file upload, job queue, Demucs subprocess runner, SSE progress streaming, track serving. `get_device()` auto-detects GPU (CUDA → MPS → CPU fallback) for Demucs inference.
+- `backend/demucs_wrapper.py` — Demucs subprocess helper; patches `torchaudio.save` to fall back to soundfile when torchcodec is unavailable.
 - `frontend/src/App.tsx` — Single-file React SPA: upload flow, mixer/player UI with Web Audio API, drag-to-reorder tracks
 - `frontend/src/types.ts` — Shared TypeScript interfaces
 
@@ -48,3 +48,4 @@ docker compose up --build        # full stack on :5000
 - Audio elements should use `canplaythrough` (not `loadeddata`) before considering tracks ready for playback.
 - `play()` calls return promises that must be awaited/caught — never fire-and-forget.
 - Seeking must wait for `seeked` events on all tracks before resuming playback.
+- GPU acceleration: `get_device()` in `app.py` auto-detects the best available device. Torch is imported lazily inside this function to avoid requiring it at module load time (important for tests). The device is passed to Demucs via `-d`.
