@@ -6,14 +6,21 @@ Track Splitter — a web app that splits audio files into individual instrument 
 
 ## Architecture
 
-- `backend/app.py` — Flask API: file upload, job queue, Demucs subprocess runner, SSE progress streaming, track serving. `get_device()` auto-detects GPU (CUDA → MPS → CPU fallback) for Demucs inference.
+- `backend/app.py` — Flask API: file upload, job queue, Demucs subprocess runner, SSE progress streaming, track serving, persistent job library. `get_device()` auto-detects GPU (CUDA → MPS → CPU fallback) for Demucs inference. SQLite (`../data/jobs.db`) stores job metadata, custom names, and mixer settings.
 - `backend/demucs_wrapper.py` — Demucs subprocess helper; patches `torchaudio.save` to fall back to soundfile when torchcodec is unavailable.
-- `frontend/src/App.tsx` — Single-file React SPA: upload flow, mixer/player UI with Web Audio API, drag-to-reorder tracks
-- `frontend/src/types.ts` — Shared TypeScript interfaces
+- `frontend/src/App.tsx` — Single-file React SPA: upload flow, mixer/player UI, drag-to-reorder tracks, persistent library view with navigation tabs
+- `frontend/src/types.ts` — Shared TypeScript interfaces (`Track`, `MixerSettings`, `LibraryJob`, etc.)
 
 Progress flows from demucs stderr → `format_progress()` in app.py → SSE → frontend `ProgressDisplay` component.
 
-Audio playback uses Web Audio API: each track is an `HTMLAudioElement` → `MediaElementAudioSourceNode` → per-track `GainNode` → master `GainNode` → destination.
+Audio playback: each track is an `HTMLAudioElement` with native `.volume` control. Master gain uses `1/sqrt(n)` scaling across audible tracks.
+
+### Persistence
+
+- Jobs persist in SQLite until the user explicitly deletes them (no auto-cleanup).
+- Mixer settings (volumes, mutes, solos, track order) auto-save to the backend (debounced 1s) via `PUT /api/jobs/:id/settings` and restore when reopening from the library.
+- Users can rename splits via inline editing (`PUT /api/jobs/:id/name`).
+- Library endpoint: `GET /api/jobs` returns all completed jobs. Delete via `DELETE /api/jobs/:id`.
 
 ## Commands
 
@@ -50,3 +57,6 @@ docker compose up --build        # full stack on :5000
 - Seeking must wait for `seeked` events on all tracks before resuming playback.
 - GPU acceleration: `get_device()` in `app.py` auto-detects the best available device. Torch is imported lazily inside this function to avoid requiring it at module load time (important for tests). The device is passed to Demucs via `-d`.
 - Do NOT drift-correct tracks by reassigning `currentTime` in the animation frame loop — each assignment forces a browser seek that causes audible choppy/jagged playback. Sync tracks only at play and seek time; minor drift between independent `HTMLAudioElement`s is inaudible.
+- DB schema migrations use `ALTER TABLE ... ADD COLUMN` wrapped in try/except for idempotency (SQLite lacks `IF NOT EXISTS` on ALTER TABLE).
+- Mixer auto-save skips the initial render (via a ref flag) to avoid overwriting restored settings with defaults.
+- When loading a job from the library, the `<Mixer>` component uses `key={jobId}` to force a full remount and clean audio teardown/setup.
