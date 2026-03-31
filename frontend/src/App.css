@@ -474,6 +474,78 @@ body {
   transition: width 0.1s linear;
 }
 
+/* ---- Transposition Control ---- */
+.transposition-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  margin-bottom: 0.25rem;
+}
+
+.transposition-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 0.25rem;
+}
+
+.transposition-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  line-height: 1;
+}
+
+.transposition-btn:hover:not(:disabled) {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.transposition-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.transposition-value {
+  min-width: 5rem;
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.transposition-reset {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s;
+  margin-left: 0.25rem;
+}
+
+.transposition-reset:hover {
+  background: var(--border);
+}
+
 /* ---- Keyboard Shortcut Hint ---- */
 .shortcut-hint {
   display: flex;
