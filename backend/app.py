@@ -748,13 +748,34 @@ def download_all(job_id: str):
 
     output_path = OUTPUT_DIR / job_id
 
+    # Pitch-shift support via ?semitones=N (-12 to 12)
+    semitones_raw = request.args.get("semitones", "0")
+    try:
+        semitones = int(semitones_raw)
+    except (ValueError, TypeError):
+        semitones = 0
+    if semitones != 0 and not (-12 <= semitones <= 12):
+        return jsonify({"error": "semitones must be between -12 and 12"}), 400
+
+    def _resolve_track_source(track_path: str) -> str:
+        if semitones != 0:
+            pitched = _get_pitched_path(track_path, semitones)
+            if pitched:
+                return pitched
+        return track_path
+
     if fmt == "wav":
-        zip_path = OUTPUT_DIR / f"{job_id}.zip"
-        if zip_path.exists():
-            zip_path.unlink()
-        shutil.make_archive(str(zip_path.with_suffix("")), "zip", str(output_path))
-        return send_file(str(zip_path), mimetype="application/zip",
-                         as_attachment=True, download_name=f"{Path(job['filename']).stem}_tracks.zip")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for track in job.get("tracks", []):
+                matches = list(output_path.rglob(track["filename"]))
+                if matches:
+                    src = _resolve_track_source(str(matches[0]))
+                    shutil.copy2(src, os.path.join(tmpdir, track["filename"]))
+            zip_base = str(OUTPUT_DIR / f"{job_id}_wav")
+            shutil.make_archive(zip_base, "zip", tmpdir)
+            zip_path = zip_base + ".zip"
+            return send_file(zip_path, mimetype="application/zip",
+                             as_attachment=True, download_name=f"{Path(job['filename']).stem}_tracks.zip")
 
     # Convert all tracks to requested format, then zip
     format_info = EXPORT_FORMATS[fmt]
@@ -762,9 +783,10 @@ def download_all(job_id: str):
         for track in job.get("tracks", []):
             matches = list(output_path.rglob(track["filename"]))
             if matches:
+                src = _resolve_track_source(str(matches[0]))
                 out_name = Path(track["filename"]).stem + format_info["ext"]
                 out_path = os.path.join(tmpdir, out_name)
-                cmd = ["ffmpeg", "-y", "-i", str(matches[0])] + format_info["codec"] + [out_path]
+                cmd = ["ffmpeg", "-y", "-i", src] + format_info["codec"] + [out_path]
                 subprocess.run(cmd, capture_output=True, timeout=120)
 
         zip_base = str(OUTPUT_DIR / f"{job_id}_{fmt}")

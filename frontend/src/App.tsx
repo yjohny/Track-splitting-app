@@ -883,7 +883,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
         <h3 className="download-title">Download</h3>
         <div className="download-buttons">
           <a
-            href={`${API}/api/tracks/${jobId}/download-all${exportFormat !== "wav" ? `?format=${exportFormat}` : ""}`}
+            href={`${API}/api/tracks/${jobId}/download-all?format=${exportFormat}${transposition !== 0 ? `&semitones=${transposition}` : ""}`}
             className="btn btn-primary"
             onClick={handleDownloadAll}
             aria-label="Download all tracks as ZIP"
