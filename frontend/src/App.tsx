@@ -347,6 +347,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
   const [downloading, setDownloading] = useState<Record<string, boolean>>({});
   const [editingName, setEditingName] = useState(false);
   const [editName, setEditName] = useState(jobName || "");
+  const [transposition, setTransposition] = useState<number>(initialSettings?.transposition ?? 0);
   const animFrameRef = useRef<number | null>(null);
 
   const anySolo = Object.values(solos).some(Boolean);
@@ -381,11 +382,26 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
     }
   }, [initialTracks, initialSettings]);
 
+  // Build track URL with optional transposition query param
+  const trackUrl = useCallback((filename: string) => {
+    const params = transposition !== 0 ? `?semitones=${transposition}` : "";
+    return `${API}/api/tracks/${jobId}/${filename}${params}`;
+  }, [jobId, transposition]);
+
   // Load audio elements (no Web Audio API — use native volume for Safari compat)
+  // Re-runs when transposition changes to reload pitch-shifted audio.
   useEffect(() => {
     const elements: Record<string, HTMLAudioElement> = {};
     let loadedCount = 0;
     let hasFinalized = false;
+    setLoaded(false);
+
+    // Capture the playback position so we can restore it after reload
+    const prevElements = audioElementsRef.current;
+    const prevTime = Object.values(prevElements)[0]?.currentTime ?? 0;
+    // Tear down previous audio elements
+    Object.values(prevElements).forEach((a) => { a.pause(); a.src = ""; });
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
 
     const finalize = () => {
       if (hasFinalized) return;
@@ -395,6 +411,11 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
         return el && isFinite(el.duration) ? el.duration : 0;
       }));
       setDuration(maxDur);
+      // Restore previous playback position
+      if (prevTime > 0) {
+        Object.values(elements).forEach((a) => { a.currentTime = prevTime; });
+        setCurrentTime(prevTime);
+      }
       setLoaded(true);
     };
 
@@ -413,7 +434,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
     initialTracks.forEach((t) => {
       const audio = new Audio();
       audio.preload = "auto";
-      audio.src = `${API}/api/tracks/${jobId}/${t.filename}`;
+      audio.src = trackUrl(t.filename);
 
       audio.addEventListener("canplaythrough", onTrackReady, { once: true });
       audio.addEventListener("error", () => {
@@ -432,7 +453,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
       Object.values(elements).forEach((a) => { a.pause(); a.src = ""; });
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [initialTracks, jobId]);
+  }, [initialTracks, jobId, trackUrl]);
 
   // Sync volume via native HTMLAudioElement.volume (Safari-compatible)
   useEffect(() => {
@@ -497,6 +518,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
         mutes,
         solos,
         trackOrder: trackOrder.map((t) => t.name),
+        transposition,
       };
       fetch(`${API}/api/jobs/${jobId}/settings`, {
         method: "PUT",
@@ -505,7 +527,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
       }).catch(() => {});
     }, 1000);
     return () => clearTimeout(timer);
-  }, [volumes, mutes, solos, trackOrder, jobId]);
+  }, [volumes, mutes, solos, trackOrder, transposition, jobId]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -680,7 +702,7 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
       const res = await fetch(`${API}/api/tracks/${jobId}/mix`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ volumes: volumeMap, format: exportFormat }),
+        body: JSON.stringify({ volumes: volumeMap, format: exportFormat, semitones: transposition }),
       });
 
       if (!res.ok) {
@@ -754,6 +776,44 @@ function Mixer({ tracks: initialTracks, jobId, fileName, initialSettings, onName
         <div className="mixer-loading">
           <div className="spinner" />
           <span>Loading tracks...</span>
+        </div>
+      )}
+
+      {/* Transposition control */}
+      {loaded && (
+        <div className="transposition-control" role="group" aria-label="Key transposition">
+          <span className="transposition-label">Key</span>
+          <button
+            className="transposition-btn"
+            onClick={() => setTransposition((p) => Math.max(-12, p - 1))}
+            disabled={transposition <= -12}
+            aria-label="Transpose down one semitone"
+            title="Down one semitone"
+          >
+            &minus;
+          </button>
+          <span className="transposition-value" aria-live="polite">
+            {transposition === 0 ? "Original" : `${transposition > 0 ? "+" : ""}${transposition} st`}
+          </span>
+          <button
+            className="transposition-btn"
+            onClick={() => setTransposition((p) => Math.min(12, p + 1))}
+            disabled={transposition >= 12}
+            aria-label="Transpose up one semitone"
+            title="Up one semitone"
+          >
+            +
+          </button>
+          {transposition !== 0 && (
+            <button
+              className="transposition-reset"
+              onClick={() => setTransposition(0)}
+              aria-label="Reset transposition"
+              title="Reset to original key"
+            >
+              Reset
+            </button>
+          )}
         </div>
       )}
 

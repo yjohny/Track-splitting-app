@@ -25,6 +25,7 @@ export interface MixerSettings {
   mutes: Record<string, boolean>;
   solos: Record<string, boolean>;
   trackOrder: string[];
+  transposition?: number;
 }
 
 export interface LibraryJob {

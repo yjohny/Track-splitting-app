@@ -488,6 +488,45 @@ EXPORT_FORMATS = {
 }
 
 
+def _get_pitched_path(source_path: str, semitones: int) -> str | None:
+    """Pitch-shift an audio file by the given number of semitones.
+
+    Uses ffmpeg asetrate/aresample/atempo to shift pitch while preserving tempo.
+    Returns the path to the cached pitch-shifted file, or None on failure.
+    """
+    source = Path(source_path)
+    cache_dir = source.parent / "_pitched" / f"st{semitones}"
+    cached = cache_dir / source.name
+    if cached.exists():
+        return str(cached)
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Probe the sample rate of the source file
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=sample_rate", "-of", "csv=p=0", source_path],
+        capture_output=True, text=True, timeout=10,
+    )
+    sample_rate = int(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip().isdigit() else 44100
+
+    ratio = 2 ** (semitones / 12)
+    new_rate = sample_rate * ratio
+    tempo = 1 / ratio  # compensate speed change
+
+    filter_str = f"asetrate={new_rate},aresample={sample_rate},atempo={tempo}"
+
+    cmd = ["ffmpeg", "-y", "-i", source_path, "-af", filter_str, str(cached)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        try:
+            cached.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    return str(cached)
+
+
 # ---- Routes ----
 
 @app.route("/api/health", methods=["GET"])
@@ -645,6 +684,20 @@ def download_track(job_id: str, track_filename: str):
 
     source_path = str(matches[0])
 
+    # Pitch-shift support via ?semitones=N (-12 to 12)
+    semitones_raw = request.args.get("semitones", "0")
+    try:
+        semitones = int(semitones_raw)
+    except (ValueError, TypeError):
+        semitones = 0
+    if semitones != 0:
+        if not (-12 <= semitones <= 12):
+            return jsonify({"error": "semitones must be between -12 and 12"}), 400
+        pitched = _get_pitched_path(source_path, semitones)
+        if not pitched:
+            return jsonify({"error": "Pitch shifting failed"}), 500
+        source_path = pitched
+
     if fmt == "wav":
         return send_file(source_path, mimetype="audio/wav", conditional=True)
 
@@ -749,12 +802,27 @@ def download_mix(job_id: str):
     output_path = OUTPUT_DIR / job_id
     format_info = EXPORT_FORMATS[fmt]
 
+    # Pitch-shift support for mix
+    semitones = 0
+    if "semitones" in request.json:
+        try:
+            semitones = int(request.json["semitones"])
+        except (ValueError, TypeError):
+            semitones = 0
+        if semitones != 0 and not (-12 <= semitones <= 12):
+            return jsonify({"error": "semitones must be between -12 and 12"}), 400
+
     track_files = []
     for track in job.get("tracks", []):
         matches = list(output_path.rglob(track["filename"]))
         if matches:
             vol = volume_map.get(track["name"], 1.0)
-            track_files.append((str(matches[0]), float(vol)))
+            src = str(matches[0])
+            if semitones != 0:
+                pitched = _get_pitched_path(src, semitones)
+                if pitched:
+                    src = pitched
+            track_files.append((src, float(vol)))
 
     if not track_files:
         return jsonify({"error": "No tracks found for this job. They may have been cleaned up."}), 404
@@ -888,6 +956,11 @@ def save_settings(job_id: str):
         if not isinstance(data["trackOrder"], list):
             return jsonify({"error": "trackOrder must be an array"}), 400
         settings["trackOrder"] = data["trackOrder"]
+    if "transposition" in data:
+        try:
+            settings["transposition"] = int(data["transposition"])
+        except (ValueError, TypeError):
+            settings["transposition"] = 0
 
     conn = get_db()
     conn.execute("UPDATE jobs SET mixer_settings = ?, updated_at = ? WHERE id = ?",
